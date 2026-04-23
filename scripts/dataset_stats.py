@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Compute per-class pixel and image-level frequency statistics for LoveDA,
 broken down by split (Train/Val) and scene (Urban/Rural). Save sample
-image+mask overlays for visual sanity check. Write dataset_stats.md.
+image+mask overlays for visual sanity check. Write docs/dataset_stats.md.
 
 Usage (from repo root, with `landuse` conda env active):
     python scripts/dataset_stats.py
 
 Outputs:
-    dataset_stats.md           # human-readable report
+    docs/dataset_stats.md           # human-readable report
     data/loveda/stats.json     # raw numbers for downstream use (loss weights etc.)
     data/loveda/samples/*.png  # 8 sample image+mask overlays
 
@@ -375,7 +375,7 @@ def main() -> None:
                         default=Path(__file__).resolve().parent.parent / "data" / "loveda",
                         help="Path to unzipped LoveDA data (contains Train/ and Val/)")
     parser.add_argument("--out-md", type=Path,
-                        default=Path(__file__).resolve().parent.parent / "dataset_stats.md",
+                        default=Path(__file__).resolve().parent.parent / "docs/dataset_stats.md",
                         help="Where to write the markdown report")
     parser.add_argument("--samples-dir", type=Path,
                         default=None,
