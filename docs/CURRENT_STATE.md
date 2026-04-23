@@ -4,30 +4,42 @@
 
 ---
 
-## Last updated: [date, end of Phase N]
+## Last updated: 2026-04-23, end of Phase 0
 
 ## Repo layout
 
 ```
-project-root/
-  (nothing yet)
+USDAhackathon2026April/
+  data/
+  model/
+  scripts/
+  frontend/
+  .gitignore
+  (plan docs)
 ```
 
 ## What works
 
-- *(nothing yet)*
+- Conda env `landuse` (Python 3.11) active on Ubuntu box
+- `torch.cuda.is_available()` returns `True`, device confirmed as RTX 4070 Ti SUPER
+- All packages installed: transformers, datasets, accelerate, albumentations, opencv-python-headless, matplotlib, seaborn, tqdm, fastapi, uvicorn, python-multipart, anthropic, pydantic
 
 ## What's half-done
 
-- *(nothing yet)*
+- tmux confirmed installed but detach shortcut not yet verified
 
 ## What's next
 
-Phase 0: Environment & remote dev workflow. Verify CUDA on Ubuntu box, set up SSH + tmux, smoke-test Windows backup.
+Phase 1: LoveDA download + dataset analysis.
+- Download Urban + Rural train/val splits
+- Write `dataset_stats.py` — per-class pixel frequency, 8 sample overlays, class imbalance ratios
+- Deliverable: `dataset_stats.md` to inform loss weighting decision before Phase 3
 
 ## Known issues / gotchas
 
-- *(nothing yet)*
+- Activate env each SSH session with `conda activate landuse`
+- nvcc reports 12.0, driver reports CUDA 13.0 — normal, no action needed
+- Windows backup machine not yet smoke-tested
 
 ## Key numbers (fill in as they're measured)
 
