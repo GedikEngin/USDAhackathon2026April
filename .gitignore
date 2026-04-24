@@ -27,7 +27,6 @@ data/
 *.pth
 *.ckpt
 *.safetensors
-model/
 !model/.gitkeep
  
 # Logs & outputs

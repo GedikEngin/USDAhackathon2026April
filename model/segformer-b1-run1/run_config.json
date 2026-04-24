@@ -1,0 +1,16 @@
+{
+  "data_root": "data/loveda",
+  "output_dir": "model/segformer-b1-run1",
+  "epochs": 15,
+  "batch_size": 2,
+  "grad_accum": 4,
+  "lr": 6e-05,
+  "weight_decay": 0.01,
+  "warmup_steps": 500,
+  "crop_size": 1024,
+  "num_workers": 0,
+  "seed": 42,
+  "log_every": 50,
+  "keep_last_n": 3,
+  "resume": "model/segformer-b1-run1/epoch_4.pt"
+}
