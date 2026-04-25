@@ -1,5 +1,5 @@
-f(base) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 
---dirsfirst
+tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 --dirsfirst
+(landuse2) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 --dirsfirst
 .
 ├── agent
 │   ├── __init__.py
@@ -55,6 +55,9 @@ f(base) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|
 │   │   └── 3546.png
 │   ├── app.js
 │   └── index.html
+├── hls_misc
+│   ├── 01_data_download.ipynb
+│   └── 01_data_download.ipynb:Zone.Identifier
 ├── model
 │   └── segformer-b1-run1
 │       ├── best.pt
@@ -115,11 +118,15 @@ f(base) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|
 │   ├── dataset.py
 │   ├── dataset_stats.py
 │   ├── download_loveda.sh
+│   ├── drought_county_features.csv
+│   ├── drought_features.py
+│   ├── drought_features.py:Zone.Identifier
 │   ├── emissions.py
 │   ├── gridmet_county_daily_2005_2024.parquet
 │   ├── gridmet_pull.py
 │   ├── gssurgo_county_features.csv
 │   ├── gssurgo_county_features.py
+│   ├── hls_pull.py
 │   ├── infer.py
 │   ├── nass_corn_5states_2005_2024.csv
 │   ├── nass_corn_5states_features.csv
@@ -131,9 +138,10 @@ f(base) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|
 │   ├── smoke_tools.py
 │   ├── test_loader.py
 │   ├── train.py
+│   ├── weather_county_features.csv
 │   └── weather_features.py
 ├── fileStructure.txt
 ├── requirements-windows.txt
 └── requirements.txt
 
-31 directories, 103 files
+32 directories, 110 files
