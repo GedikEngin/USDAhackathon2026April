@@ -170,5 +170,5 @@ for col in metric_cols:
     nn = merged[col].notna().sum()
     print(f"  {col:30s} {nn:>5,} ({100*nn/len(merged):5.1f}%)")
 
-merged.to_csv("nass_corn_5states_2015_2024.csv", index=False)
-print(f"\nSaved to nass_corn_5states_2015_2024.csv")
+merged.to_csv("nass_corn_5states_2005_2024.csv", index=False)
+print(f"\nSaved to nass_corn_5states_2005_2024.csv")
