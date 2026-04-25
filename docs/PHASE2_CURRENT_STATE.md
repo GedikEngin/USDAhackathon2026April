@@ -61,6 +61,7 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 - `scripts/gssurgo_extract.py` — read .gdb files, pull Valu1 table, build per-property GeoTIFFs from MUKEY → property mapping, run zonal statistics over TIGER county polygons. Output: per-county soil features CSV keyed on GEOID.
 - `scripts/prism_pull.py` — daily climate data (PRISM 4km or gridMET) for 5 states, **2005–2024**. Variables: tmax, tmin, prcp, srad, vp.
 - `scripts/prism_features.py` — derive GDD (base 50°F, cap 86°F), EDD/KDD heat-stress hours, VPD, cumulative precip, monthly summaries. Aggregate to county-day, then to per-(GEOID, year, forecast_date) feature rows respecting the as-of rule (no leakage of post-forecast-date data).
+- `scripts/drought_features.py` — pure local processing on the USDM Cumulative Percent Area CSV. Derives most-recent-reading D0–D4, DSCI, season-cumulative drought weeks, peak DSCI during silking. Per-(GEOID, year, forecast_date). Honors the as-of join rule (most recent Thursday strictly before forecast date).
 - `scripts/merge_all.py` — outer-join all per-(GEOID, year) tables and per-(GEOID, year, forecast_date) tables. Output: single `training_master.parquet`.
 - HLS acquisition script (no name yet) — required for Phase D.1 (Prithvi). Not yet started; lower priority than the engineered features. See "Open architectural questions" below.
 
@@ -68,6 +69,7 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 
 ### 🟢 Have & ready
 - NASS combined-practice corn yield/production/area, 5 states, 2015–2024, county level (`scripts/nass_corn_5states_2015_2024.csv`) — extending to 2005 as next action
+- US Drought Monitor — **Cumulative Percent Area** format, weekly, county-level (5 states, 2005–2024)
 - Mean monthly temperature heatmap + CSV (coarse smoothed feature only)
 - Mean monthly precipitation heatmap + CSV (coarse smoothed feature only)
 - gSSURGO state .gdb files downloaded for all 5 states, 10m resolution
@@ -87,7 +89,6 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 - **HLS imagery** — required for Phase D.1 (Prithvi as feature extractor). 2005–2013 is Landsat-only; Sentinel-2 component starts 2015. Not yet started.
 - **NAIP imagery** — tertiary; only if a phase explicitly calls for sub-meter visual context.
 - **Prithvi model weights** — download in Phase D.1.
-- **US Drought Monitor** — useful drought-severity feature for the analog-year retrieval embedding.
 
 ### ⚫ Deprioritized (with rationale)
 - Hourly temperature — overkill for county-annual yield; daily Tmin/Tmax + GDD is sufficient.
@@ -267,7 +268,7 @@ All datasets join on `GEOID` (5-digit string: state FIPS zero-padded to 2 + coun
 ## Known issues / open architectural questions
 
 - **HLS pull strategy not yet designed.** TB-scale download for 5 states × 20 years × growing-season scenes. Need to settle storage location, idempotent download orchestration, and whether to pull every available scene or only the ~12 scenes leading up to each forecast date. **2005–2013 is Landsat-only HLS** (Sentinel-2 component begins 2015); cadence is lower in early years. Decision deferred until Phase B baseline ships and we know whether Phase D.1 is worth the data-engineering cost.
-- **Drought feature source not picked.** US Drought Monitor weekly per-county D0–D4 percentages vs. SPI/SPEI computed from PRISM. Decide in Phase A.4/A.5.
+- **Drought feature source: USDM Cumulative Percent Area locked.** Per-county weekly D0–D4 percentages, format = each level reports % of county at that level *or worse*. SPI/SPEI from PRISM still derivable as a redundant signal if needed; not blocking.
 - **gSSURGO MUKEY → property rasterization** — straightforward but slow. Consider caching the per-property GeoTIFFs to avoid recomputing on every feature pass.
 - **NASS non-irrigated columns** — 0% coverage in the current pull. Derivable from `acres_harvested_all − acres_harvested_irr` for fields where irrigated coverage exists; for fields where irrigated coverage is also sparse, this is a known gap. Re-running `nass_pull.py` with the rate-limit fixes for non-irrigated specifically is optional, low-priority.
 - **NASS county coverage in extension years (2005–2014).** Some Colorado mountain counties may drop out of the early years entirely; need to QC after the 2005–2014 backfill lands.

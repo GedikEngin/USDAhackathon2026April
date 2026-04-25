@@ -31,7 +31,7 @@
 
 | Dataset | Source | Use | Coverage needed | Status | Notes |
 |---|---|---|---|---|---|
-| US Drought Monitor | NDMC / USDM | Drought severity feature for retrieval embedding | 5 states, weekly, 2005–2024 | 🔴 Need | Weekly D0–D4 percentages per county. Drought stress is a top-3 yield predictor. Phase A.5. SPI/SPEI from PRISM is a fallback. |
+| US Drought Monitor — Cumulative Percent Area | NDMC / USDM data export | Drought severity feature for retrieval embedding | 5 states, weekly, 2005–2024 | 🟢 Have | Format chosen: **Cumulative Percent Area** (each D-level column reports % of county at that level *or worse*; population-weighted variants rejected — corn fields don't care about population). Categorical splits derivable as `cat_D{n} = cum_D{n} − cum_D{n+1}`. DSCI derivable as `D0+D1+D2+D3+D4` cumulative sum (0–500). Drought stress is a top-3 yield predictor; DSCI is a candidate for the retrieval embedding itself. Phase A.5 will write `drought_features.py`. |
 
 ## Already on hand
 
@@ -73,7 +73,7 @@ These are deferred until a relevant phase forces the call. Listed here so they a
 - **State-aggregation method** for percentile rollup. Default planted-acres-weighted mean of each percentile; document caveat. Could revisit in Phase G.
 - **Prithvi exact band order and normalization.** Discovered during D.1 implementation, from Prithvi's HuggingFace card.
 - **Whether to attempt Phase D.2 (Prithvi fine-tune).** Conditional on D.1 ablation.
-- **Drought source: US Drought Monitor vs. SPI/SPEI from PRISM.** Decide in Phase A.4 / A.5.
+- **Drought source: USDM Cumulative Percent Area locked.** SPI/SPEI from PRISM still derivable as a redundant signal if needed.
 - **County coverage filter:** minimum N years of complete data per county. Decide after the full 2005–2024 NASS extension lands.
 
 ## Schema conventions (locked)

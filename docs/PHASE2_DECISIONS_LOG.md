@@ -100,3 +100,25 @@
 **Open questions carried forward:**
 - Can the existing GEE export be re-run for 2005–2014 in one task, or does it need to be split? (CDL availability per year may force splitting.)
 - After the NASS extension to 2005–2014, what's the actual county coverage by year? Some Colorado mountain counties may drop out for additional years; need to QC.
+
+---
+
+### Phase 2-pre — USDM format chosen — 2026-04-25
+
+**Decided:**
+- **US Drought Monitor data acquired in Cumulative Percent Area format.** Each D-level column reports the percentage of the county at that level *or worse* (D0 = abnormally dry+, D1 = moderate+, D2 = severe+, D3 = extreme+, D4 = exceptional). Weekly granularity (USDM publishes Thursdays). 5 states, 2005–2024, county level.
+- **Categorical splits derivable post-hoc** as `cat_D{n} = cum_D{n} − cum_D{n+1}`. Cumulative is strictly more flexible — no information loss vs. picking categorical at acquisition time.
+- **Drought Severity Coverage Index (DSCI)** = sum of cumulative D0–D4 columns (range 0–500). Single scalar capturing "how bad and how widespread." Strong candidate for the analog-year retrieval embedding.
+- **As-of join rule for forecast features:** USDM week-ending dates are Thursdays. When joining to a forecast date D, use the most recent USDM Thursday strictly *before* D (not ≤). Prevents same-week leakage.
+
+**Rejected alternatives:**
+- **Population-weighted variants** (Cumulative/Categorical Population, Cumulative/Categorical Population Percent). Population-weighted drought is useful for water-management policy; corn fields don't care about people. Rejected.
+- **Categorical Percent Area** at acquisition. Equivalent information content but less flexible — would have to roll back up to cumulative for severity-ladder features. Rejected; cumulative covers both use cases.
+- **Raw area (square miles)** rather than percent. Would let county-size differences dominate the signal. Percent is comparable across counties of any size. Rejected.
+- **SPI/SPEI from PRISM as the sole drought source.** Derivable but redundant with USDM, which is the agronomic standard and is already gathered. Keep PRISM-derived indices available as a fallback feature only.
+
+**Surprises / learnings:**
+- USDM exports include both cumulative and categorical in separate files; cumulative was the right pick because every published agronomic drought feature (DSCI, drought-week counts, peak-during-silking) is built from cumulative. Categorical is a derived view, not a primary source.
+
+**Open questions carried forward:**
+- Exact column names in the downloaded CSV — spot-check after acquisition. Common conventions: `D0/D1/D2/D3/D4` directly, or `pct_D0/...`, or full names like `Drought_D0`. Document in `drought_features.py`.

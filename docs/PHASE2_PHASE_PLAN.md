@@ -87,12 +87,17 @@ The Phase A pipeline follows the script-level structure already established in t
 - **Critical:** all aggregations respect the **as-of rule** — when constructing features for forecast date `D` in year `Y`, use only data with timestamps strictly before `D`. Enforced at the feature-construction layer.
 - **Deliverable:** `scripts/prism_county_features.csv` keyed on `(GEOID, year, forecast_date)`.
 
-### A.5 — Drought monitor (recommended, not strictly required)
+### A.5 — US Drought Monitor features
 
-- **Action:** pull US Drought Monitor weekly D0–D4 percentages by county, 2005–2024.
-- Resample to forecast dates (carry most recent reading forward).
+- ✅ **Data acquired** in Cumulative Percent Area format (5 states, weekly, 2005–2024, county level). Each D-level column reports % of county at that level *or worse*.
+- **Action:** write `scripts/drought_features.py`. No external pull; pure local processing on the USDM CSV.
+- Derived features per `(GEOID, year, forecast_date)`:
+  - **Most-recent reading**: D0/D1/D2/D3/D4 cumulative percentages as-of the last USDM Thursday strictly before the forecast date.
+  - **DSCI** (Drought Severity Coverage Index): `D0 + D1 + D2 + D3 + D4` cumulative sum, range 0–500. Strong candidate for the retrieval embedding.
+  - **Season-cumulative drought weeks**: count of weeks since May 1 where D2 ≥ 50% (sustained-stress signal).
+  - **Peak DSCI during silking** (DOY 196–227): max DSCI in that 4-week window. Silking is when corn is most water-sensitive.
+- **As-of join rule:** USDM week-ending dates are Thursdays. Use the most recent Thursday strictly *before* the forecast date (not ≤) to avoid same-week leakage.
 - **Deliverable:** `scripts/drought_county_features.csv` keyed on `(GEOID, year, forecast_date)`.
-- Lower priority than A.1–A.4. Skip if Phase A scope blows up; SPI/SPEI derivable from PRISM is a fallback signal.
 
 ### A.6 — Master training table
 
@@ -101,7 +106,7 @@ The Phase A pipeline follows the script-level structure already established in t
   - `corn_ndvi_5states_2005_2024.csv` on `(GEOID, year)`
   - `gssurgo_county_features.csv` on `(GEOID,)` — broadcasts soil features across all years
   - `prism_county_features.csv` on `(GEOID, year, forecast_date)`
-  - `drought_county_features.csv` on `(GEOID, year, forecast_date)` (if A.5 done)
+  - `drought_county_features.csv` on `(GEOID, year, forecast_date)`
 - **Schema:**
   - keys: `GEOID, state_alpha, year, forecast_date`
   - target: `yield_target` (state-aggregated; null at forecast time, populated for training rows)
