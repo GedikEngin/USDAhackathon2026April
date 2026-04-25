@@ -21,3 +21,5 @@ What we have:
 - Corn Area Planted for All Purposes and Harvested for Grain, Yield, and Production – States and United States: 2023-2025 
 
 - Gridded Soil Survey Geographic (gSSURGO) Database (Nebraska, Colorado, Iowa, Wisconsin, Missouri)
+- NASS data regarding the following: GEOID,year,state_alpha,county_name,yield_target,irrigated_share,harvest_ratio,acres_harvested_all,acres_planted_all,yield_bu_acre_irr
+- ndvi mapping of the 5 states downloading from google earth engine currently
