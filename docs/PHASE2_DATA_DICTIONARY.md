@@ -1,236 +1,366 @@
-# PHASE2_DATA_DICTIONARY.md
+# PHASE2 Data Dictionary — `training_master.parquet`
 
-> Reference for every column in `phase2/data/training_master.parquet` (the output of `scripts/merge_all.py`). Source-of-truth for what each feature means, where it came from, and how it was constructed. Update whenever a feature is added, removed, or has its semantics changed.
+> Reference doc for every column in `scripts/training_master.parquet`, the canonical input to Phase B (analog retrieval), Phase C (XGBoost point-estimate model), Phase D (Prithvi integration), and Phase F (forecast narration agent).
 >
-> **Approximate shape:** 44 columns × ~27k–37k rows (5 states × 388 corn-bearing counties
-> × 21 years × 4 forecast dates, minus rows where NASS suppressed the yield report).
-> See [Coverage summary](#coverage-summary) for the precise breakdown.
-
-**Last updated:** 2026-04-25
+> Generated at end of Phase A.7. The output of `scripts/merge_all.py`. **When this dictionary disagrees with the source `*_features.py` script, the source script wins** — keep this doc in sync when feature definitions change.
 
 ---
 
-## Conventions
+## Quick facts
 
-- **Keys** are the columns used to join across sources: `GEOID`, `year`, `forecast_date`. Every row in `training_master.parquet` is unique on `(GEOID, year, forecast_date)`.
-- **Granularity** indicates the natural resolution of the source. Static features (gSSURGO) broadcast across years; state-level features (USDM, HLS) broadcast across counties within a state.
-- **As-of safety:** all `(GEOID, year, forecast_date)`-keyed features were constructed using only data with timestamps strictly before `forecast_date` in the corresponding year. This is the non-negotiable temporal-leakage rule. Static and per-year features are not affected.
-- **Forecast-date strings** are the project canonical: `"08-01"`, `"09-01"`, `"10-01"`, `"EOS"`. (HLS pull's internal labels `aug1`/`sep1`/`oct1`/`final` are normalized to the canonical form by `scripts/hls_features.py`.)
-- **GEOID** is always 5-character zero-padded county FIPS code, stored as string.
+| Property | Value |
+|---|---|
+| File | `scripts/training_master.parquet` |
+| Format | Parquet (snappy compression) |
+| Size on disk | ~2.46 MB |
+| Shape | 25,872 rows × 48 columns |
+| Grain (one row per…) | `(GEOID, year, forecast_date)` |
+| Years | 2005–2024 (20 years; 2005–2022 train / 2023 val / 2024 holdout) |
+| States | CO, IA, MO, NE, WI |
+| GEOIDs (5-digit FIPS) | 388 distinct (subset of 443 TIGER 2018 counties — 55 are corn-absent and have no NASS yield) |
+| Forecast dates | `08-01`, `09-01`, `10-01`, `EOS` (= Nov 30) |
+| Target | `yield_target` (combined-practice corn-grain yield, bu/acre) |
 
----
-
-## Keys
-
-| Column | Type | Description |
-|---|---|---|
-| `GEOID` | str (5 chars) | County FIPS code, zero-padded. Joinable to TIGER 2018 county polygons. |
-| `state_alpha` | str (2 chars) | USPS state code, one of `IA, CO, WI, MO, NE`. Source: NASS. |
-| `county_name` | str | County name from NASS QuickStats. Sometimes spelled differently than TIGER (e.g. `"DE KALB"` vs `"DeKalb"`); not used for joining, only for display. |
-| `year` | int | Calendar year. Range 2005–2025. 2025 rows have NaN target and are the forecast queries. |
-| `forecast_date` | str | One of `"08-01"`, `"09-01"`, `"10-01"`, `"EOS"`. EOS is operationalized as 11-30. Each `(GEOID, year)` pair has 4 rows, one per forecast date. |
-
----
-
-## Target
-
-| Column | Type | Source | Description |
-|---|---|---|---|
-| `yield_target` | float | NASS QuickStats | Combined-practice corn yield, **bushels per acre**. The single target the model predicts. NaN for 2025 rows (the forecast queries) and for any (GEOID, year) where NASS suppressed the row. |
+**Read it back:**
+```python
+import pandas as pd
+df = pd.read_parquet("scripts/training_master.parquet")
+df["GEOID"] = df["GEOID"].astype(str).str.zfill(5)  # parquet preserves str, but defensive
+```
 
 ---
 
-## NASS-derived features (per `(GEOID, year)`, broadcast across forecast_date)
+## Column overview by source
 
-Source: `scripts/nass_corn_5states_features.csv`, derived from `scripts/nass_corn_5states_2005_2024.csv` (raw NASS QuickStats pull).
-
-| Column | Type | Description |
-|---|---|---|
-| `irrigated_share` | float | Irrigated acres harvested / combined-practice acres harvested. Coverage is sparse — only Colorado and Nebraska report irrigated NASS rows. NaN where unreported. Range [0, 1]. |
-| `harvest_ratio` | float | Acres harvested / acres planted. Indicator of crop failure rate. Range [0, 1] in normal years; rare values <0.5 indicate severe loss. |
-| `acres_harvested_all` | float | Combined-practice acres harvested for corn-grain. Used to area-weight if we ever roll up to state. |
-| `acres_planted_all` | float | Combined-practice acres planted for corn-grain. |
-| `yield_bu_acre_irr` | float | Yield from irrigated rows only. Sparse — same coverage as `irrigated_share`. NaN otherwise. |
-
-**Excluded from feature set:** `yield_bu_acre_all` (= the target), `production_bu_*` (redundant with yield × acres), `yield_bu_acre_noirr` (sparse and computable from combined − irrigated).
-
----
-
-## MODIS NDVI features (per `(GEOID, year)`, broadcast across forecast_date)
-
-Source: 21 yearly CSVs `phase2/data/ndvi/corn_ndvi_5states_<year>.csv` (2004–2024), exported server-side via Earth Engine using `scripts/ndvi_county_extraction.js`. CDL-masked to corn pixels (`cropland == 1`). MODIS MOD13Q1 product (250m, 16-day composites).
-
-> **NDVI is pre-scaled (× 0.0001 applied server-side).** Values are floats in `[-0.2, 1.0]`. Do not multiply by 0.0001 downstream.
-
-| Column | Type | Description |
-|---|---|---|
-| `ndvi_peak` | float | Maximum NDVI observed in the growing season (DOY 121–273) for corn pixels in the county. |
-| `ndvi_gs_mean` | float | Mean NDVI over the full growing season (DOY 121–273). |
-| `ndvi_gs_integral` | float | Integrated NDVI (sum × 16-day spacing). Proxy for cumulative biomass. |
-| `ndvi_silking_mean` | float | Mean NDVI over the silking window (DOY 196–227). Most yield-correlated subseason. |
-| `ndvi_veg_mean` | float | Mean NDVI over the vegetative window (DOY 152–195). |
-
-**Coverage caveats:**
-- Counties with no CDL corn pixels in a year emit NaN NDVI (rare in IA/NE, more common in mountain CO).
-- 2004 backfill: NDVI was extended one year earlier than NASS to give a one-year warmup for trend features. 2004 rows are *not* included in the master table (range is 2005–2025).
-- **As-of caveat:** these are *seasonal* NDVI summaries computed over the full growing season — they include composites collected after the forecast date. For Phases B/C they are safe to use for the EOS forecast date; for Aug 1 / Sep 1 / Oct 1 they technically violate the as-of rule. Phase B may construct cutoff-respecting trailing means from a per-date NDVI table if needed. For now, treat NDVI as smoothed seasonal context, not a strict as-of feature.
-- Pre-2008 CO and MO data is patchy (~6% null overall) due to CDL coverage rolling out state-by-state.
+| Source | Cols | Grain at source | How it broadcasts | Script |
+|---|---|---|---|---|
+| **Keys** | 5 | n/a | n/a | `merge_all.py` (skeleton) |
+| **Target + NASS** | 6 | `(GEOID, year)` | broadcast across 4 forecast_dates | `nass_features.py` |
+| **NDVI (MODIS)** | 5 | `(GEOID, year)` | broadcast across 4 forecast_dates | `ndvi_county_extraction.js` (GEE) |
+| **Soil (gSSURGO)** | 11 | `(GEOID,)` static | broadcast across years AND forecast_dates | `gssurgo_county_features.py` |
+| **Weather (gridMET)** | 11 | `(GEOID, year, forecast_date)` | direct merge | `weather_features.py` |
+| **Drought (USDM)** | 6 | `(state, year, forecast_date)` | broadcast to all GEOIDs in state | `drought_features.py` |
+| **HLS** | 4 | `(state, year, forecast_date)` | broadcast to all GEOIDs in state | (HLS pull pipeline; redone in Phase D.1) |
+| **TOTAL** | **48** |  |  |  |
 
 ---
 
-## HLS NDVI/EVI features (per `(state, year, forecast_date)`, broadcast across GEOIDs)
+## Keys (5 columns)
 
-Source: `phase2/data/hls/hls_vi_features.csv` (output of `scripts/hls_pull.py`), reshaped by `scripts/hls_features.py` to `scripts/hls_county_features.csv`.
+The composite primary key is `(GEOID, year, forecast_date)`. Asserted unique by `merge_all.py`.
 
-State-level state-of-vegetation summary derived from NASA HLS (Harmonized Landsat-Sentinel) v2.0 imagery. State bounding boxes; up to 5 cloud-masked granules per (state, year, forecast_date) window; NDVI/EVI computed per granule and median-aggregated.
+### `GEOID` — string, length 5
+5-digit county FIPS (state FIPS + county FIPS, both zero-padded). Example: `"19153"` = Polk County, IA. **Always 5 characters; always strings, not ints.** Asserted by `merge_all.py`.
 
-> **HLS coverage starts 2013.** All HLS columns are NaN for 2005–2012 rows by design — Landsat-only era revisit cadence is too sparse for reliable in-season features. 2013–2014 are Landsat-only (lower revisit cadence) — sparser than 2015+.
+### `state_alpha` — string, length 2
+USPS state code: one of `{"CO", "IA", "MO", "NE", "WI"}`. Sourced from NASS (authoritative). Drives drought and HLS broadcasts.
 
-| Column | Type | Description |
-|---|---|---|
-| `hls_ndvi_mean` | float | Median across granules of within-granule mean NDVI (state bbox, cloud-masked via Fmask). |
-| `hls_ndvi_std` | float | Median across granules of within-granule NDVI std. Indicator of within-state heterogeneity. |
-| `hls_evi_mean` | float | Median across granules of within-granule mean EVI. |
-| `hls_evi_std` | float | Median across granules of within-granule EVI std. |
-| `hls_n_granules` | Int64 (nullable) | Number of granules that contributed. Higher = more confident; ≤2 = sparse coverage warning. |
+### `county_name` — string
+Uppercased county name from NASS (e.g. `"POLK"`, `"ADAMS"`). Useful for human-readable output (agent narration, log messages). **Do not use as a join key** — county names collide across states (e.g. `ADAMS` exists in CO, IA, NE, WI). Always join on `GEOID`.
 
-**Caveats:**
-- State-level only — every county in a state gets the same HLS values for a given `(year, forecast_date)`. Within-state heterogeneity is not captured. (Phase D.1 Prithvi feature extraction will address this at the chip/county level.)
-- As-of safe by construction: each forecast date's window is the ~30 days preceding the forecast date.
-- Pre-2013 NaN: fundamental data gap, not a feature failure.
-- When `hls_vi_features.csv` is absent (current state as of 2026-04-25), HLS columns are not emitted by `merge_all.py`. Downstream code must handle their absence gracefully.
+### `year` — int64
+Calendar year, 2005–2024 inclusive. The crop year and the calendar year are the same for corn in this region.
 
----
+### `forecast_date` — string
+One of `{"08-01", "09-01", "10-01", "EOS"}`. The "as-of" date for in-season features. Data with timestamp `<` forecast_date contributes to the row's features (strict before; same-day data is excluded). `EOS` = November 30 = end of growing season; effectively a post-harvest snapshot.
 
-## gSSURGO soil features (per `GEOID`, broadcast across `(year, forecast_date)`)
-
-Source: `scripts/gssurgo_county_features.csv`, derived from gSSURGO state .gdb files (10m resolution) by `scripts/gssurgo_county_features.py`. Zonal stats over TIGER 2018 county polygons (reprojected to EPSG:5070 Albers before zonal stats — gSSURGO native CRS is Albers). Source table: gSSURGO Valu1 (depth-weighted summary table USDA recommends for cross-state aggregation).
-
-> Static across years. Soil properties do not change at the project's time scale.
-
-| Column | Type | Description |
-|---|---|---|
-| `nccpi3corn` | float | National Commodity Crop Productivity Index, corn variant. Range [0, 1], higher = better corn productivity potential. The single most relevant gSSURGO column for corn yield. |
-| `nccpi3all` | float | NCCPI all-crops variant. Slightly broader productivity index. Range [0, 1]. |
-| `aws0_100` | float | Available water storage 0–100 cm, mm. How much plant-available water the top 1m of soil can hold. |
-| `aws0_150` | float | Available water storage 0–150 cm, mm. Deeper version. |
-| `soc0_30` | float | Soil organic carbon 0–30 cm, g/m². Topsoil organic content. |
-| `soc0_100` | float | Soil organic carbon 0–100 cm, g/m². Deeper version. |
-| `rootznemc` | float | Rooting zone depth — effective max, cm. How deep roots can reach. |
-| `rootznaws` | float | Rooting zone available water storage, mm. Effectively `aws` clipped to root depth. |
-| `droughty` | float | Fraction of map unit area classified as droughty soils. Range [0, 1]. Higher = more drought-prone. |
-| `pctearthmc` | float | Percent earthy mapunit components. Indirect proxy for fraction of county that is non-rock/non-water cropland-suitable. |
-| `pwsl1pomu` | float | Potential wetland soils, level 1, percent of map unit. Higher = more wet/poorly-drained soils. |
-
-**Notes:**
-- 443 GEOIDs covered across the 5 states; not every county grows corn but soil features still exist for all.
-- `Valu1` is USDA-published and well-documented; column-name glosses above paraphrase the official descriptions.
+**Sort order:** the script writes rows ordered chronologically (`08-01 < 09-01 < 10-01 < EOS`) within each `(GEOID, year)` group. If you re-sort, use a `pd.Categorical` with `categories=["08-01","09-01","10-01","EOS"]` to preserve this; lexicographic sorting happens to also work but is fragile.
 
 ---
 
-## Weather features (per `(GEOID, year, forecast_date)`)
+## Target (1 column)
 
-Source: `scripts/weather_county_features.csv`, derived from `scripts/gridmet_county_daily_2005_2024.parquet` by `scripts/weather_features.py`. Daily county-aggregated gridMET (4km, CONUS, 2005–2024). All features respect the as-of rule by slicing the daily dataframe at `cutoff_date ≤ forecast_date − 1 day` before any aggregation.
+### `yield_target` — float64, units: **bu/acre**
+Combined-practice (irrigated + non-irrigated) corn-for-grain yield. From NASS QuickStats 2005–2024 county-level annual surveys. **0 nulls in the full table** (rows with no NASS yield were filtered out in `nass_features.py` via `.dropna(subset=["yield_target"])`).
 
-**Phenology windows used (DOY ranges, inclusive):**
+**Range observed:** roughly 50–250 bu/acre, with state means ~140–195 in IA, lower and more variable in CO and WI. Drought years (2012, 2024 in some areas) produce large negative excursions.
+
+**For training:** this is the ground-truth label. Held-out by year (2023 val, 2024 holdout). For forecast inference at a current year, this column is unknown and the row exists only as a feature carrier — but the master table itself does not contain rows without `yield_target` (filtered upstream).
+
+---
+
+## NASS features (5 cols beyond target)
+
+All sourced from NASS QuickStats. Per-`(GEOID, year)` and broadcast across all 4 forecast_dates within a year. **Same value at 08-01 / 09-01 / 10-01 / EOS** — these are annual statistics, not in-season measurements. Source: `scripts/nass_features.py`.
+
+> **As-of caveat:** NASS yield/production are reported *post-harvest*. Strictly speaking, including these annual values at the 08-01 row violates the as-of rule for the current target year. **`yield_target` is the label, not a feature, so this is not leakage** — it's only "leakage" if used as a feature. The other NASS columns (`acres_*`, `irrigated_share`, `harvest_ratio`) are partly post-hoc (final harvested acres are not knowable on Aug 1) and should be treated as **structural/management priors** in modeling — i.e. lagged or replaced with prior-year proxies if Phase C wants stricter as-of fidelity. Current decision: ship as-is, document here, revisit if Phase B/C show issues.
+
+### `irrigated_share` — float64, range [0, 1]
+`acres_harvested_irr / acres_harvested_all`, with NaN-as-rainfed convention (`.fillna(0)`) and clip to [0, 1]. **0 nulls.** Only CO and NE report `acres_harvested_irr` separately; for IA / MO / WI the input is NaN and `irrigated_share` becomes 0. State means: CO ≈ 0.7, NE ≈ 0.6, others ~0.
+
+### `harvest_ratio` — float64, range [0, 1]
+`acres_harvested_all / acres_planted_all`, clipped to [0, 1]. Proxy for in-season abandonment (drought, hail, late freeze). Typical values 0.95–1.00 in normal years; drops in drought years. **8 nulls** (4 (GEOID, year) tuples × 2-of-4 forecast_dates? actually × 4 = 8 means 2 (GEOID, year) tuples have NaN — likely tiny counties where NASS suppressed `acres_planted_all` for disclosure reasons).
+
+### `acres_harvested_all` — float64, units: acres
+Combined-practice harvested corn-grain acreage. **8 nulls** (same rows as `harvest_ratio`). Range: hundreds (small CO/WI counties) to ~250,000 (large IA counties).
+
+### `acres_planted_all` — float64, units: acres
+Combined-practice planted corn-grain acreage. **0 nulls.** Always ≥ `acres_harvested_all`.
+
+### `yield_bu_acre_irr` — float64, units: bu/acre
+Irrigated-only yield. Reported only for CO and NE counties with material irrigation. **21,660 nulls (83.7%)** — this is structural sparseness, not a bug. Use as a feature only with explicit imputation strategy or as an indicator with `is_irrigated_reported = yield_bu_acre_irr.notna()`.
+
+---
+
+## NDVI features (5 cols)
+
+MODIS MOD13Q1 (16-day, 250 m) NDVI, masked to corn pixels via USDA CDL, county-aggregated by mean reducer. Per-`(GEOID, year)` and broadcast across all 4 forecast_dates. Source: `scripts/ndvi_county_extraction.js` (Earth Engine).
+
+> **CRITICAL: NDVI values are pre-scaled in the CSVs.** The GEE script applies `× 0.0001` server-side, so columns are floats in roughly `[-0.2, 1.0]`. **Do not re-apply the scale factor downstream.**
+
+> **As-of caveat:** NDVI columns are **whole-season summaries** (e.g. `ndvi_gs_integral` integrates over DOY 121–273 = May 1 → Sep 30 of the target year). They are *not* clipped to the forecast_date — at `08-01` you still see end-of-September NDVI. **This violates strict as-of for the 08-01 and 09-01 forecast dates.** The locked decision (see `PHASE2_DECISIONS_LOG.md`) is to ship MODIS NDVI as a *trend feature* — its value at the current year is treated as observable when forecasting, with the rationale that MODIS NDVI is updated near-real-time and end-of-season summary at forecast time is a reasonable approximation of "the NDVI that will have been observed by harvest." For strict as-of, replace with HLS-derived running-NDVI in Phase D.1.
+
+> **Coverage:** 492 nulls per NDVI column (1.9%). These are CO 2005–2007 counties where USDA CDL hadn't fully rolled out yet, so corn-masking failed. Treat as missing-not-at-random; documented in `PHASE2_CURRENT_STATE.md`.
+
+### `ndvi_peak` — float64
+Maximum NDVI observed during the growing season (DOY 121–273). Year-level proxy for canopy vigor at biomass peak.
+
+### `ndvi_gs_mean` — float64
+Mean NDVI across the growing season.
+
+### `ndvi_gs_integral` — float64
+Sum of NDVI values across the growing season. Proxy for cumulative canopy vigor; correlates with biomass.
+
+### `ndvi_silking_mean` — float64
+Mean NDVI during silking (DOY 196–227 ≈ Jul 15–Aug 15). Phenologically the most yield-relevant window for corn (kernel set is decided here).
+
+### `ndvi_veg_mean` — float64
+Mean NDVI during vegetative phase (DOY 152–195 ≈ Jun 1–Jul 14). Pre-silking canopy development.
+
+---
+
+## Soil features (11 cols, gSSURGO)
+
+USDA gSSURGO Valu1 table, area-weighted county aggregates. **Static across years** — soil doesn't change at year-decade timescales. Source: `scripts/gssurgo_county_features.py`. **0 nulls on every column.** All values are area-weighted means computed via per-county windowed reads of the state MUKEY raster (CRS: EPSG:5070 Albers Equal Area).
+
+### `nccpi3corn` — float64, range [0, 1]
+National Commodity Crop Productivity Index for corn. Higher = better corn productivity inherent to the soil. Strong yield prior.
+
+### `nccpi3all` — float64, range [0, 1]
+NCCPI averaged across all crops. Use alongside `nccpi3corn` if the model wants a corn-specific signal vs. general productivity.
+
+### `aws0_100` — float64, units: mm (or cm-equivalent)
+Available water storage 0–100 cm depth.
+
+### `aws0_150` — float64, units: mm
+Available water storage 0–150 cm depth. Deeper-rooted crops draw on more of this.
+
+### `soc0_30` — float64, units: g/m² or t/ha (per gSSURGO Valu1 convention; see source)
+Soil organic carbon 0–30 cm.
+
+### `soc0_100` — float64
+Soil organic carbon 0–100 cm.
+
+### `rootznemc` — float64
+Root zone effective moisture capacity. Combines depth and AWS over the rooting zone.
+
+### `rootznaws` — float64
+Root zone available water storage.
+
+### `droughty` — float64, [0, 100]
+Percent of county area flagged as drought-vulnerable per gSSURGO classification. Higher = soil more prone to dry-out.
+
+### `pctearthmc` — float64, [0, 100]
+Percent of county classified as "earth" surface (excludes water bodies, urban, bedrock). Useful for normalizing acreage features and for understanding what fraction of the county can grow anything.
+
+### `pwsl1pomu` — float64, [0, 100]
+Potential wetland soils, percent of county. Negatively correlated with arable area in some regions.
+
+---
+
+## Weather features (11 cols, gridMET)
+
+gridMET daily 4 km weather, county-aggregated, with phase-window and as-of-clipped derivations. Per-`(GEOID, year, forecast_date)`; **direct merge, not broadcast.** Source: `scripts/weather_features.py`. Underlying daily data: `scripts/gridmet_county_daily_2005_2024.parquet` (from `gridmet_pull.py`).
+
+**As-of safety:** the function `build_features_for_cutoff(df, year, cutoff_date)` slices the daily DataFrame at the very top with `date <= cutoff_date`. This is the **single point of leakage control** — every feature below is derived only from that pre-sliced data. Phase windows are additionally clipped to `cutoff_doy` (e.g. on 08-01 the silking window only includes DOYs 196–213).
+
+**Phase windows (DOY, inclusive):**
 - Vegetative: 152–195 (Jun 1 – Jul 14)
 - Silking: 196–227 (Jul 15 – Aug 15)
 - Grain fill: 228–273 (Aug 16 – Sep 30)
+- May 1 = DOY 121 (start of cumulative-from-planting features)
 
-Phase windows are clipped to the cutoff DOY in the year — e.g., on `08-01` the silking aggregate only covers DOY ≤ 213.
+**Cumulative-from-May-1 features** (`gdd_cum_*`, `edd_*`, `prcp_cum_mm`, `dry_spell_max_days`) are season-cumulative through the cutoff. These don't structurally NaN at any forecast date because by 08-01 they have at least 92 days of accumulation.
 
-| Column | Type | Description |
-|---|---|---|
-| `gdd_cum_f50_c86` | float | Cumulative growing degree days, Fahrenheit base 50 / cap 86. Both `tmin` and `tmax` are clamped to `[50, 86] °F` before averaging (McMaster & Wilhelm / NDAWN convention). Sum from May 1 to cutoff. The standard corn GDD calculation. |
-| `edd_hours_gt86f` | float | Excessive degree-hours above 86°F over May 1 → cutoff, computed by single-sine hourly interpolation between daily tmin and tmax (Allen 1976 / Baskerville-Emin 1969). Captures sub-daily heat stress that simple `max(0, tmax − 86)` misses. |
-| `edd_hours_gt90f` | float | Same calculation, threshold 90°F. Severe heat stress indicator. |
-| `vpd_kpa_veg` | float | Mean daily VPD (kPa) over the vegetative phase (DOY 152–195, clipped to cutoff). NaN if cutoff is before the phase starts. |
-| `vpd_kpa_silk` | float | Mean daily VPD (kPa) over silking (DOY 196–227, clipped to cutoff). The most yield-critical VPD window. |
-| `vpd_kpa_grain` | float | Mean daily VPD (kPa) over grain fill (DOY 228–273, clipped to cutoff). NaN for early-season forecast dates that don't reach this window. |
-| `prcp_cum_mm` | float | Cumulative precipitation, May 1 → cutoff, mm. |
-| `dry_spell_max_days` | int | Longest run of consecutive days with `<2 mm/day` in May 1 → cutoff. Captures drought distribution, not just total volume. |
-| `srad_total_veg` | float | Sum daily shortwave radiation (MJ/m²) over vegetative phase, clipped to cutoff. Cumulative biomass-driving energy. |
-| `srad_total_silk` | float | Sum daily shortwave radiation (MJ/m²) over silking, clipped to cutoff. |
-| `srad_total_grain` | float | Sum daily shortwave radiation (MJ/m²) over grain fill, clipped to cutoff. NaN at `08-01`. |
+**Phase-aggregate features** (`vpd_kpa_*`, `srad_total_*`) are means/sums over the phase window clipped to cutoff. **Structural NaN pattern:** if the cutoff falls before the phase starts, the slice is empty and the feature is NaN. See "NaN patterns" section below.
 
-**Coverage caveat:** gridMET pull is 2005–2024. Any 2004 skeleton rows (if retained) have NaN weather columns.
+### `gdd_cum_f50_c86` — float64, units: °F-days
+Cumulative growing degree days, base 50°F / cap 86°F (industry standard for corn; McMaster & Wilhelm, NDAWN). **Both `tmin` and `tmax` are clamped** to [50, 86]°F before averaging — not just `tavg − 50`. Cumulative from DOY 121 → cutoff. **0 nulls.** Range: ~1500 (08-01, cooler counties) to ~4000 (EOS, hotter counties).
+
+### `edd_hours_gt86f` — float64, units: degree-hours
+Heat-stress: degree-hours above 86°F, summed over DOY 121 → cutoff. Computed via single-sine hourly interpolation (Allen 1976 / Baskerville-Emin 1969 closed-form integral). **0 nulls.**
+
+### `edd_hours_gt90f` — float64, units: degree-hours
+Severe heat-stress: degree-hours above 90°F, same method as above. **0 nulls.** Will be ≤ `edd_hours_gt86f` by construction.
+
+### `vpd_kpa_veg` — float64, units: kPa
+Mean daily vapor pressure deficit during vegetative phase (DOY 152–195), clipped to cutoff. **0 nulls** at all 4 forecast dates (vegetative window ends Jul 14, well before 08-01).
+
+### `vpd_kpa_silk` — float64, units: kPa
+Mean daily VPD during silking (DOY 196–227), clipped to cutoff. **0 nulls** at all 4 forecast dates: at 08-01 cutoff the slice is DOYs 196–213 (Jul 15–Aug 1), still ~17 days of silking data. **Critical yield-determining feature** — silking VPD strongly predicts pollination success.
+
+### `vpd_kpa_grain` — float64, units: kPa
+Mean daily VPD during grain fill (DOY 228–273). **6,468 nulls (25.0%) — STRUCTURAL.** At the 08-01 cutoff, grain fill (which starts DOY 228 = Aug 16) hasn't begun. Every 08-01 row has NaN here by construction. See "NaN patterns" section.
+
+### `prcp_cum_mm` — float64, units: mm
+Cumulative precipitation, May 1 → cutoff. **0 nulls.**
+
+### `dry_spell_max_days` — int64, units: days
+Longest run of consecutive days with `< 2 mm/day` precipitation, May 1 → cutoff. **0 nulls.** Note: `int64` dtype (no NaN); if a future year produces NaN, pandas will widen to float64 — pin this if it matters.
+
+### `srad_total_veg` — float64, units: MJ/m²
+Total solar radiation during vegetative phase, clipped to cutoff. **0 nulls.**
+
+### `srad_total_silk` — float64, units: MJ/m²
+Total solar radiation during silking, clipped to cutoff. **0 nulls.**
+
+### `srad_total_grain` — float64, units: MJ/m²
+Total solar radiation during grain fill. **6,468 nulls (25.0%) — STRUCTURAL**, same pattern as `vpd_kpa_grain`.
 
 ---
 
-## Drought features (per `(state, year, forecast_date)`, broadcast across GEOIDs)
+## Drought features (6 cols, USDM)
 
-Source: `scripts/drought_county_features.csv`, derived from `phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv` by `scripts/drought_features.py`. US Drought Monitor weekly data, **state-level** (not county-level — the raw CSV has no county FIPS). State values broadcast to every GEOID in that state.
+US Drought Monitor weekly state-level percentages, broadcast to GEOIDs within state. Per-`(GEOID, year, forecast_date)`. Source: `scripts/drought_features.py`. **0 nulls on every column** (USDM coverage extends back to 2000; full coverage for the 2005–2024 modeling window).
 
-**As-of rule:** the selected USDM reading for `(state, year, forecast_date)` is the most recent reading where `valid_end < forecast_date` (strictly before, never on or after). USDM week-validity windows can bracket a forecast date; strict `<` guarantees the reading was fully published before the cutoff.
+**Cumulative convention:** USDM percentages are cumulative — `D0 ≥ D1 ≥ D2 ≥ D3 ≥ D4` by construction. Each column reports % of state at that severity *or worse*. The asserts in `drought_features.py` confirmed 0 monotonicity violations across all 420 (state × year × forecast_date) state-level rows.
 
-> USDM percentages are cumulative by construction: `D0 ≥ D1 ≥ D2 ≥ D3 ≥ D4`.
+**As-of rule:** for each `(state, year, forecast_date)`, the most recent reading whose `valid_end < forecast_date` (strict) is selected. USDM week-validity windows can bracket the forecast date (a Tuesday-released map covers Mon–Sun); the strict-`<` semantics guarantee the reading was fully published before the forecast.
 
-| Column | Type | Description |
-|---|---|---|
-| `d0_pct` | float | Percentage of state in D0 (Abnormally Dry) or worse. Range [0, 100]. |
-| `d1_pct` | float | Percentage of state in D1 (Moderate Drought) or worse. |
-| `d2_pct` | float | Percentage of state in D2 (Severe Drought) or worse. |
-| `d3_pct` | float | Percentage of state in D3 (Extreme Drought) or worse. |
-| `d4_pct` | float | Percentage of state in D4 (Exceptional Drought). |
-| `d2plus` | float | Convenience alias for `d2_pct` ("severe-or-worse"). Same value, descriptive name. Worth the duplicated column for readability of model code. |
+**Spatial broadcast:** state readings flow to all GEOIDs in that state. **Within-state spatial heterogeneity in drought is not captured.** A western Iowa drought that doesn't reach eastern Iowa shows up as the same `d2_pct` value in both. Acceptable for v2 baseline; richer spatial drought could come from PRISM SPI/SPEI or satellite drought indices in a later phase.
 
-**Excluded from feature set:** DSCI (= sum of all five columns, redundant); season-cum drought weeks; trailing-N-week means. Defer until Phase B/C show the model wants more drought signal.
+### `d0_pct` — float64, range [0, 100]
+Percent of state in drought category D0 ("Abnormally Dry") or worse. **0 nulls.**
+
+### `d1_pct` — float64, range [0, 100]
+Percent of state in D1 ("Moderate Drought") or worse. ≤ `d0_pct`.
+
+### `d2_pct` — float64, range [0, 100]
+Percent of state in D2 ("Severe Drought") or worse. ≤ `d1_pct`.
+
+### `d3_pct` — float64, range [0, 100]
+Percent of state in D3 ("Extreme Drought") or worse. ≤ `d2_pct`.
+
+### `d4_pct` — float64, range [0, 100]
+Percent of state in D4 ("Exceptional Drought") or worse. ≤ `d3_pct`.
+
+### `d2plus` — float64, range [0, 100]
+**Stable alias for `d2_pct`.** Identical value (because USDM percentages are cumulative — "D2 or worse" is exactly D2). Exposed under a descriptive name for retrieval-embedding code that wants to reference "severe drought share" without remembering the cumulative convention. Drop one or the other if you want a smaller feature set; they carry the same signal.
 
 ---
 
-## Coverage summary
+## HLS features (4 cols)
 
-Approximate row count in `training_master.parquet`:
+Harmonized Landsat–Sentinel surface-reflectance vegetation indices, state-aggregated, derived per forecast date. Per-`(state, year, forecast_date)`, **broadcast to all GEOIDs in the state.** **High null rate (59.1%) — pre-2013 has no rows by design** (HLS Sentinel-2 component starts 2015; Landsat-only era is too sparse). The HLS pull will be redone in Phase D.1; treat current values as provisional.
+
+> **Note on losing within-state heterogeneity:** like USDM, HLS is broadcast from state level, so all counties in a state share the same `ndvi_mean` value at a given (year, forecast_date). The MODIS-derived NDVI columns (`ndvi_peak`, `ndvi_gs_mean`, etc.) preserve county-level detail; HLS does not. Don't double-count.
+
+> **Note on column name overlap with MODIS:** `ndvi_mean` (HLS) vs. `ndvi_gs_mean` (MODIS) are different things from different sensors at different scales. HLS columns have no `gs_` prefix; if a feature column starts with `ndvi_` and the suffix is `mean` or `std`, it's HLS. If the suffix includes `gs`, `peak`, `silking`, or `veg`, it's MODIS.
+
+### `ndvi_mean` — float64
+Mean NDVI from HLS surface reflectance, state-aggregated, as-of forecast_date. 15,297 nulls (59.1%, pre-2013).
+
+### `ndvi_std` — float64
+Standard deviation of NDVI across pixels in the state, as-of forecast_date. 15,297 nulls.
+
+### `evi_mean` — float64
+Mean Enhanced Vegetation Index from HLS. 15,297 nulls.
+
+### `evi_std` — float64
+Standard deviation of EVI. 15,297 nulls.
+
+> **Dropped at load time:** `is_forecast` (object-dtype semantic flag from the pull pipeline) and `n_granules` (count column). These are **not** in `training_master.parquet`. See `merge_all.py` `HLS_FEATURE_COLS` allowlist if you need to re-include or rename.
+
+---
+
+## NaN patterns — what's intentional vs. what isn't
+
+This section is **important for downstream modeling.** A naive median-imputation pipeline will mishandle several of these patterns and silently degrade model quality. The recommended downstream handling assumes Phase B (analog retrieval) and Phase C (XGBoost).
+
+### Intentional structural NaN (treat as "not applicable", not "missing")
+
+| Column | Null count | Pattern | Cause | Recommended handling |
+|---|---|---|---|---|
+| `vpd_kpa_grain` | 6,468 (25.0%) | Every `08-01` row | Grain fill (DOY 228+) hasn't started by Aug 1 | **Drop the column for `forecast_date == "08-01"` models, or use forecast_date × feature interactions in XGBoost (handles missing natively).** Do NOT median-impute. |
+| `srad_total_grain` | 6,468 (25.0%) | Every `08-01` row | Same | Same |
+| `yield_bu_acre_irr` | 21,660 (83.7%) | Most rows outside CO/NE | NASS only reports practice-split for irrigated states | Derive an `is_irrigated_reported` indicator and use that. Do NOT impute the value. |
+
+### Sparse-coverage NaN (real signal of "data not available for this county/year")
+
+| Column | Null count | Pattern | Cause | Recommended handling |
+|---|---|---|---|---|
+| `ndvi_*` (5 cols) | 492 (1.9%) each | CO 2005–2007 | USDA CDL didn't cover CO until 2008 | XGBoost handles natively. For analog retrieval, use a feature-presence-aware distance. |
+| `harvest_ratio`, `acres_harvested_all` | 8 (~0%) | 2 (GEOID, year) tuples × 4 fd | NASS disclosure suppression for tiny counties | Drop those rows from training; they're 0.03% of data. |
+| HLS `ndvi_*` / `evi_*` (4 cols) | 15,297 (59.1%) each | All pre-2013 rows | HLS doesn't exist pre-2013 | Use HLS only as ablation feature; don't include for years where it's structurally missing. Phase D.1 will redo this. |
+
+### "Should never be NaN" — assert before training
+
+| Column | Expected null count |
+|---|---|
+| `GEOID`, `state_alpha`, `county_name`, `year`, `forecast_date` | 0 (asserted by `merge_all.py`) |
+| `yield_target` | 0 (filtered upstream in `nass_features.py`) |
+| `irrigated_share`, `acres_planted_all` | 0 |
+| All gSSURGO columns | 0 |
+| Cumulative-from-May-1 weather (`gdd_cum_*`, `edd_*`, `prcp_cum_mm`, `dry_spell_max_days`) | 0 |
+| Veg-window and silk-window weather (`vpd_kpa_veg`, `vpd_kpa_silk`, `srad_total_veg`, `srad_total_silk`) | 0 |
+| All drought columns | 0 |
+
+If any of these are non-zero in a future re-run, something upstream broke.
+
+---
+
+## As-of fidelity by source — reference table
+
+How strictly each source respects "data with timestamp `<` forecast_date only":
+
+| Source | As-of fidelity | Why |
+|---|---|---|
+| Weather (gridMET-derived) | **STRICT** | `build_features_for_cutoff` slices once at the top of each call; phase windows clipped to `cutoff_doy`. |
+| Drought (USDM) | **STRICT** | Selects most recent USDM reading with `valid_end < forecast_date`. Bracket-spanning weeks are excluded. |
+| Soil (gSSURGO) | **N/A** (static) | Soil doesn't change year to year. |
+| NDVI (MODIS) | **WEAK — whole-season summary** | Same NDVI value at 08-01 / 09-01 / 10-01 / EOS within a year. Treated as observable trend feature; replace with running-NDVI in Phase D.1. |
+| NASS aux (acres, irrigated_share, harvest_ratio) | **WEAK — annual reported post-harvest** | Same value across all 4 forecast_dates. Treat as structural priors, not as in-season measurements. Lagged variants (prior year's irrigated_share) would be strict. |
+| HLS | **AS-OF by design** (per pipeline spec; redone in Phase D.1) | Each forecast_date has its own snapshot. Provisional until Phase D.1 redo. |
+
+---
+
+## Worked example — one row, fully unpacked
 
 ```
-443 GEOIDs × 21 years (2005–2025) × 4 forecast_dates = ~37,212 rows
+GEOID:           "19153"
+state_alpha:     "IA"
+county_name:     "POLK"
+year:            2020
+forecast_date:   "08-01"
+yield_target:    194.5            # bu/acre, combined-practice corn-grain (2020 reported value)
+irrigated_share: 0.0              # IA: rainfed
+harvest_ratio:   0.99             # 99% of planted was harvested
+acres_planted_all: 200000         # ~200k acres planted to corn
+ndvi_peak:       0.84             # MODIS, whole-season max (DOY 121-273)
+ndvi_silking_mean: 0.82           # MODIS, silking-window mean
+nccpi3corn:      0.78             # gSSURGO, high productivity soil
+aws0_100:        225              # mm, available water 0-100cm
+gdd_cum_f50_c86: 1620             # °F-days, May 1 -> Jul 31
+edd_hours_gt86f: 110              # mild heat stress so far
+vpd_kpa_silk:    1.2              # mean VPD during silking-up-to-Aug-1 window
+vpd_kpa_grain:   NaN              # STRUCTURAL — grain fill hasn't started by 08-01
+prcp_cum_mm:     280              # cumulative rain May 1 -> Jul 31
+dry_spell_max_days: 8             # longest dry run
+srad_total_grain: NaN             # STRUCTURAL — same as vpd_kpa_grain
+d0_pct:          12.5             # 12.5% of IA in D0+ on the most recent USDM reading before 2020-08-01
+d2_pct:          0.0              # no severe drought
+d2plus:          0.0              # alias of d2_pct
+ndvi_mean:       0.65             # HLS state-level, as-of 08-01
 ```
 
-Actual row count will be slightly less because some `(GEOID, year)` combinations are suppressed in NASS and dropped.
-
-Feature group coverage (rough, post-merge):
-
-| Feature group | Coverage |
-|---|---|
-| `yield_target` | ~95% (sparse for some CO mountain counties; NaN for 2025 forecast queries) |
-| NASS features (combined-practice) | ~95–100% |
-| NASS features (irrigated) | ~7% (CO + NE only) |
-| NDVI | ~95–100% for major corn states; sparser for low-corn counties; ~6% null in CO/MO pre-2008 |
-| gSSURGO | 100% (all 443 counties) |
-| Weather | 100% (gridMET covers all CONUS counties) |
-| Drought | 100% (state-broadcast) |
-| HLS | 0% for 2005–2012; ~60–95% for 2013–2017; increasing 2018+ |
-
 ---
 
-## Train / val / holdout split
+## Versioning
 
-Locked in `PHASE2_DECISIONS_LOG.md`. `merge_all.py` does **not** filter rows — all years are present in the master table; splits are enforced in Phase B/C training scripts.
+This dictionary describes the **Phase A.7 build** of `training_master.parquet`. If `merge_all.py` is changed (new columns, new sources, schema fixes), this file must be updated in the same commit.
 
-| Split | Years |
-|---|---|
-| Train | 2005–2022 (18 years) |
-| Val | 2023 |
-| Holdout | 2024 |
-| Forecast queries | 2025 (NaN target) |
+Next planned changes:
+- **Phase D.1:** HLS pull will be redone with consistent schema and per-county (not per-state) granularity. The 4 HLS columns above will be replaced; some will be renamed.
+- **Phase B/C:** if the model wants richer drought signal, `dsci`, `season_drought_weeks`, `silking_peak_d2plus` may be added (per the deferred items in `PHASE2_DECISIONS_LOG.md`).
 
----
-
-## Adding a new feature
-
-When adding a new column to `training_master.parquet`:
-
-1. Update the relevant `*_features.py` to emit the new column.
-2. Update `merge_all.py` if the join keys change.
-3. **Add an entry here** with: column name, type, source script, granularity, and a one-sentence description of what it represents and how it was derived.
-4. Note any caveats (sparsity, as-of-rule status, coverage gaps).
-5. Log the addition in `PHASE2_DECISIONS_LOG.md` if the rationale is non-obvious.
-
----
-
-## See also
-
-- `docs/PHASE2_DATA_INVENTORY.md` — what's on disk and what's missing
-- `docs/PHASE2_DECISIONS_LOG.md` — *why* each feature is what it is
-- `docs/PHASE2_PHASE_PLAN.md` — Phase A.6 spec for `merge_all.py`
-- `docs/PHASE2_CURRENT_STATE.md` — current pipeline state
+When those land, append to this dictionary; do not delete prior entries.

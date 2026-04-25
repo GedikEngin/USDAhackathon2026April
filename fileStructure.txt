@@ -40,9 +40,11 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   ├── CURRENT_STATE.md
 │   ├── DECISIONS_LOG.md
 │   ├── PHASE2_CURRENT_STATE.md
+│   ├── PHASE2_CURRENT_STATE.md:Zone.Identifier
 │   ├── PHASE2_DATA_DICTIONARY.md
 │   ├── PHASE2_DATA_DICTIONARY.md:Zone.Identifier
 │   ├── PHASE2_DATA_INVENTORY.md
+│   ├── PHASE2_DATA_INVENTORY.md:Zone.Identifier
 │   ├── PHASE2_DECISIONS_LOG.md
 │   ├── PHASE2_PHASE_PLAN.md
 │   ├── PHASE2_PROJECT_PLAN.md
@@ -165,4 +167,4 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 ├── requirements-windows.txt
 └── requirements.txt
 
-33 directories, 131 files
+33 directories, 133 files
