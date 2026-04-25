@@ -1,5 +1,4 @@
 tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 --dirsfirst
-(landuse2) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 --dirsfirst
 .
 ├── agent
 │   ├── __init__.py
@@ -41,6 +40,8 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   ├── CURRENT_STATE.md
 │   ├── DECISIONS_LOG.md
 │   ├── PHASE2_CURRENT_STATE.md
+│   ├── PHASE2_DATA_DICTIONARY.md
+│   ├── PHASE2_DATA_DICTIONARY.md:Zone.Identifier
 │   ├── PHASE2_DATA_INVENTORY.md
 │   ├── PHASE2_DECISIONS_LOG.md
 │   ├── PHASE2_PHASE_PLAN.md
@@ -78,6 +79,15 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   │   │   │   └── gSSURGO_NE.gdb
 │   │   │   └── gSSURGO_WI
 │   │   │       └── gSSURGO_WI.gdb
+│   │   ├── hls
+│   │   │   ├── hls_vi_features.csv
+│   │   │   ├── hls_vi_features_2013_2014.csv
+│   │   │   ├── hls_vi_features_2015.csv
+│   │   │   ├── hls_vi_features_2016_2017.csv
+│   │   │   ├── hls_vi_features_2018_2023_2025.csv
+│   │   │   ├── hls_vi_features_2018_2023_2025.csv:Zone.Identifier
+│   │   │   ├── hls_vi_features_2018_2024_2025.csv
+│   │   │   └── hls_vi_features_2018_2024_2025.csv:Zone.Identifier
 │   │   ├── ndvi
 │   │   │   ├── corn_ndvi_5states_2004.csv
 │   │   │   ├── corn_ndvi_5states_2005.csv
@@ -115,6 +125,8 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   └── information_needed.txt
 ├── scripts
 │   ├── agent_repl.py
+│   ├── backtest_cone.py
+│   ├── backtest_cone.py:Zone.Identifier
 │   ├── dataset.py
 │   ├── dataset_stats.py
 │   ├── download_loveda.sh
@@ -126,22 +138,31 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   ├── gridmet_pull.py
 │   ├── gssurgo_county_features.csv
 │   ├── gssurgo_county_features.py
+│   ├── hls_county_features.csv
+│   ├── hls_features.py
+│   ├── hls_features.py:Zone.Identifier
 │   ├── hls_pull.py
+│   ├── hls_pull.py:Zone.Identifier
 │   ├── infer.py
+│   ├── merge_all.py
+│   ├── merge_all.py:Zone.Identifier
 │   ├── nass_corn_5states_2005_2024.csv
 │   ├── nass_corn_5states_features.csv
 │   ├── nass_features.py
 │   ├── nass_pull.py
 │   ├── ndvi_county_extraction.js
+│   ├── retrieval.py
+│   ├── retrieval.py:Zone.Identifier
 │   ├── smoke_agent.py
 │   ├── smoke_agent_endpoint.sh
 │   ├── smoke_tools.py
 │   ├── test_loader.py
 │   ├── train.py
+│   ├── training_master.parquet
 │   ├── weather_county_features.csv
 │   └── weather_features.py
 ├── fileStructure.txt
 ├── requirements-windows.txt
 └── requirements.txt
 
-32 directories, 110 files
+33 directories, 131 files
