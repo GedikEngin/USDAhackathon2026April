@@ -1,6 +1,6 @@
 import pandas as pd
 
-df = pd.read_csv("nass_corn_5states_2015_2024.csv")
+df = pd.read_csv("nass_corn_5states_2005_2024.csv")
 
 # Compute irrigation share where data exists (CO and NE).
 # For other states, irr cols are NaN; treat as rainfed.
