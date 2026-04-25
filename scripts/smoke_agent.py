@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.claude import ClaudeAgent
-from smoke_tools import build_3546_state
+from scripts.smoke_tools import build_3546_state
 
 
 # ---------- fake API types (mimic anthropic SDK shapes just enough) ----------
