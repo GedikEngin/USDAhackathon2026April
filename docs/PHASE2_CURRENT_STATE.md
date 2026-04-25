@@ -4,18 +4,20 @@
 
 **Project:** USDA Hackathon 2026 April — Corn Yield Forecasting
 **Repo:** `~/dev/USDAhackathon2026April`
-**Last updated:** 2026-04-25, end of Phase A.1–A.2 (NASS + NDVI both landed)
+**Last updated:** 2026-04-25, end of Phase A.3 + A.4 + A.5 (gSSURGO + gridMET + USDM all landed)
 
 ---
 
-## v2 status: Phase A.1 + A.2 complete; A.3 (gSSURGO) and A.4 (PRISM) up next
+## v2 status: Phase A.1 through A.5 complete; A.6 (merge_all) is the only remaining Phase A item
 
-Three data pipelines have output sitting on disk:
-- NASS yield 2005–2024 (full coverage on combined-practice columns)
-- MODIS NDVI 2004–2024 (corn-masked via CDL, county-aggregated; one CSV per year, 21 files)
-- US Drought Monitor weekly per-county D0–D4 percentages (raw CSV in `phase2/data/drought/`)
+Five data pipelines have output sitting on disk and joinable on the canonical keys:
+- NASS yield 2005–2024 (full coverage on combined-practice columns) — `(GEOID, year)`
+- MODIS NDVI 2004–2024 (corn-masked via CDL, county-aggregated; 21 per-year CSVs) — `(GEOID, year)`
+- gSSURGO Valu1 features for all 5 states, county-aggregated — `(GEOID,)` (static across years)
+- gridMET daily weather 2005–2024, derived per-cutoff features (GDD, EDD, VPD, precip, srad) — `(GEOID, year, forecast_date)`
+- US Drought Monitor weekly readings, derived per-cutoff features (D0–D4, d2plus) — `(GEOID, year, forecast_date)`
 
-`nass_features.py` is written and `nass_corn_5states_features.csv` is produced. `ndvi_county_extraction.js` is now version-controlled in the repo. No modeling, no backend endpoints, no agent tools yet. The v1 land-use system is shipped and untouched alongside.
+`nass_features.py`, `gssurgo_county_features.py`, `weather_features.py`, and `drought_features.py` are all written and run. `gridmet_pull.py` is written and ran for the full 2005–2024 range. `ndvi_county_extraction.js` is version-controlled. No modeling, no backend endpoints, no agent tools yet. The v1 land-use system is shipped and untouched alongside.
 
 ## Project goal (locked)
 
@@ -38,26 +40,41 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 
 - **`scripts/nass_pull.py`** — written, run for 2005–2024. Hits NASS QuickStats API for the 5 states, county-level corn yield/production/area at 3 practice levels (combined / irrigated / non-irrigated). 100% coverage on combined-practice columns. ~7% coverage on irrigated (CO + NE only). Non-irrigated columns sparse — derivable downstream from `acres_harvested_all − acres_harvested_irr`. Rate-limit fixes (2.0s delay, exponential backoff up to 240s, 4 retries) committed.
 
-- **`scripts/nass_corn_5states_2005_2024.csv`** — output of the full 2005–2024 pull. The single canonical NASS CSV.
+- **`scripts/nass_corn_5states_2005_2024.csv`** — output of the full 2005–2024 pull. The single canonical NASS CSV. 6,837 rows × 16 cols.
 
 - **`scripts/nass_features.py`** — written. Local feature engineering on the NASS CSV. No API calls. Produces `scripts/nass_corn_5states_features.csv` with `yield_target`, `irrigated_share`, `harvest_ratio`, derived non-irrigated columns.
 
-- **`scripts/nass_corn_5states_features.csv`** — output of `nass_features.py`. Ready to merge.
+- **`scripts/nass_corn_5states_features.csv`** — output of `nass_features.py`. 6,834 rows × 10 cols. Ready to merge.
 
 - **`scripts/ndvi_county_extraction.js`** — version-controlled GEE script. Pulls MODIS NDVI 2004–2024 for the 5 states, masked to corn pixels via USDA CDL, reduced to county-year. Header documents bug fixes (CDL `ImageCollection.filter` pattern, demo-image metadata reset), output schema, and how to extend or re-run. Script enqueues one Export task per year.
 
 - **`phase2/data/ndvi/corn_ndvi_5states_<year>.csv`** (21 files, 2004–2024) — output of the GEE script. 443 rows per file (TIGER/2018 county polygons for the 5 states). Schema: `GEOID, NAME, STATEFP, year, ndvi_peak, ndvi_gs_mean, ndvi_gs_integral, ndvi_silking_mean, ndvi_veg_mean`. **NDVI values are pre-scaled (× 0.0001 applied server-side); CSV values are floats in roughly [-0.2, 1.0] — do NOT re-apply the scale factor downstream.** Counties with zero CDL corn pixels in a given year emit null NDVI columns; downstream merge must tolerate this.
 
-- **`phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv`** — raw US Drought Monitor weekly D0–D4 percentages per county, 5 states. Pulled. Not yet feature-engineered into per-(GEOID, year, forecast_date) form.
+- **`scripts/gssurgo_county_features.py`** — written, run for all 5 states. Reads each state `.gdb` from `phase2/data/gSSURGO/`, pulls the Valu1 table, builds per-property GeoTIFFs by remapping MUKEY → property values, runs zonal statistics over TIGER 2018 county polygons (reprojected from 5070 Albers to match counties).
+
+- **`scripts/gssurgo_county_features.csv`** — output of gSSURGO extraction. 443 rows × 13 cols. Keyed on `GEOID` only (static across years; broadcast at merge time). Columns: `GEOID, state_alpha, nccpi3corn, nccpi3all, aws0_100, aws0_150, soc0_30, soc0_100, rootznemc, rootznaws, droughty, pctearthmc, pwsl1pomu`. Ready to merge.
+
+- **`scripts/gridmet_pull.py`** — written, run for 2005–2024. Daily weather pull from gridMET (chosen over PRISM — see decisions log). Variables: `tmax, tmin, prcp, srad, vp` daily at the gridMET 4km grid, county-aggregated to TIGER 2018 polygons. Produces one parquet per year in `data/v2/weather/raw/gridmet_county_daily_<year>.parquet` plus a combined `scripts/gridmet_county_daily_2005_2024.parquet`.
+
+- **`data/v2/weather/raw/gridmet_county_daily_<year>.parquet`** (20 files, 2005–2024) — raw daily county-aggregated weather output of `gridmet_pull.py`. Cached netcdf intermediates live in `_gridmet_nc_cache/`.
+
+- **`scripts/gridmet_county_daily_2005_2024.parquet`** — combined daily weather, all years. Input to `weather_features.py`.
+
+- **`scripts/weather_features.py`** — written, run. Derives per-`(GEOID, year, forecast_date)` features from the daily parquet. As-of slice happens once at the top of `build_features_for_cutoff`; nothing downstream of that slice can see post-cutoff data. Phase windows (vegetative DOY 152–195, silking DOY 196–227, grain DOY 228–273) are clipped to the cutoff. GDD uses Fahrenheit base 50 / cap 86 (corn standard, McMaster & Wilhelm). EDD uses single-sine hourly interpolation (Allen 1976 / Baskerville-Emin) for degree-hours above 86°F and 90°F.
+
+- **`scripts/weather_county_features.csv`** — output of `weather_features.py`. 35,440 rows × 14 cols (= 443 GEOIDs × 20 years × 4 forecast dates, minus a handful of missing combos). Columns: `GEOID, year, forecast_date, gdd_cum_f50_c86, edd_hours_gt86f, edd_hours_gt90f, vpd_kpa_veg, vpd_kpa_silk, vpd_kpa_grain, prcp_cum_mm, dry_spell_max_days, srad_total_veg, srad_total_silk, srad_total_grain`. Ready to merge.
+
+- **`phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv`** — raw US Drought Monitor weekly D0–D4 percentages, 5 states, 2000-01-10 through 2026-04-27. State-level (StateAbbreviation column; no county FIPS in source — see `drought_features.py` notes). 6,865 weekly rows.
+
+- **`scripts/drought_features.py`** — written, run. Reads the USDM CSV, broadcasts state-level readings to every GEOID in the state via `nass_corn_5states_features.csv` as the GEOID directory, applies the as-of rule (last reading with `valid_end < forecast_date` — strictly before, never on or after). Exposes individual `d0_pct, d1_pct, d2_pct, d3_pct, d4_pct` plus `d2plus` (alias for `d2_pct`, exposed under a stable name because USDM's percentages are cumulative so "D2 or worse" is identical to D2 itself).
+
+- **`scripts/drought_county_features.csv`** — output of `drought_features.py`. 27,336 rows × 9 cols (= 6,834 (GEOID, year) × 4 forecast dates). 0 nulls on every column, 0 monotonicity violations on the state-level intermediate (D0 ≥ D1 ≥ D2 ≥ D3 ≥ D4 across all 420 (state, year, forecast_date) cells). Ready to merge.
 
 ### v2 — to write
 
-- `scripts/gssurgo_extract.py` — read .gdb files, pull Valu1 table, build per-property GeoTIFFs from MUKEY → property mapping, run zonal statistics over TIGER 2018 county polygons. Output: per-county soil features CSV keyed on GEOID. **Phase A.3.**
-- `scripts/prism_pull.py` — daily climate data (PRISM 4km or gridMET) for 5 states, **2005–2024**. Variables: tmax, tmin, prcp, srad, vp. **Phase A.4.**
-- `scripts/prism_features.py` — derive GDD (base 50°F, cap 86°F), EDD/KDD heat-stress hours, VPD, cumulative precip, monthly summaries. Aggregate to county-day, then to per-(GEOID, year, forecast_date) feature rows respecting the as-of rule (no leakage of post-forecast-date data). **Phase A.4.**
-- `scripts/drought_features.py` — derive per-(GEOID, year, forecast_date) drought severity features from the existing USDM CSV. Resample weekly observations to forecast-date as-of values. **Phase A.5.**
-- `scripts/merge_all.py` — outer-join all per-(GEOID, year) tables and per-(GEOID, year, forecast_date) tables. Output: single `training_master.parquet`. **Phase A.6.**
-- HLS acquisition script (no name yet) — required for Phase D.1 (Prithvi). Not yet started; lower priority than the engineered features. See "Open architectural questions" below.
+- `scripts/merge_all.py` — outer-join all per-`(GEOID, year)` tables and per-`(GEOID, year, forecast_date)` tables. Output: single `training_master.parquet`. **Phase A.6 — only remaining Phase A item.**
+- `PHASE2_DATA_DICTIONARY.md` — column-by-column doc for `training_master.parquet`. **Phase A.7.**
+- HLS acquisition script (no name yet) — required for Phase D.1 (Prithvi). Not yet started; lower priority than the engineered baseline. See "Open architectural questions" below.
 
 ## Data status (summary; live tracker is `PHASE2_DATA_INVENTORY.md`)
 
@@ -65,10 +82,14 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 - NASS combined-practice corn yield/production/area, 5 states, **2005–2024**, county level (`scripts/nass_corn_5states_2005_2024.csv`)
 - NASS engineered features (`scripts/nass_corn_5states_features.csv`)
 - MODIS NDVI features per (GEOID, year), **2004–2024** (`phase2/data/ndvi/corn_ndvi_5states_<year>.csv` × 21)
-- US Drought Monitor weekly raw CSV (5 states, multi-year — needs feature engineering)
-- Mean monthly temperature heatmap + CSV (coarse smoothed feature only)
-- Mean monthly precipitation heatmap + CSV (coarse smoothed feature only)
-- gSSURGO state .gdb files downloaded for all 5 states, 10m resolution
+- gSSURGO Valu1 county features, all 5 states (`scripts/gssurgo_county_features.csv`)
+- gridMET daily weather raw, 2005–2024 (20 per-year parquets + combined parquet)
+- gridMET-derived per-cutoff weather features (`scripts/weather_county_features.csv`)
+- US Drought Monitor weekly raw CSV (5 states, 2000–2026)
+- USDM-derived per-cutoff drought features (`scripts/drought_county_features.csv`)
+- Mean monthly temperature heatmap + CSV (coarse smoothed feature only — superseded by gridMET for modeling)
+- Mean monthly precipitation heatmap + CSV (coarse smoothed feature only — superseded by gridMET for modeling)
+- gSSURGO state .gdb files downloaded for all 5 states, 10m resolution (kept on disk for reproducibility)
 - USDA NASS API access (key in `.env`)
 - GEE script version-controlled (`scripts/ndvi_county_extraction.js`)
 
@@ -76,9 +97,7 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 *(none currently — all queued pulls have landed)*
 
 ### 🔴 Need
-- **PRISM (or gridMET) daily weather** — for GDD, EDD, VPD, solar radiation. 2005–2024. Slow download; start early. Phase A.4.
-- **gSSURGO extraction** — files downloaded but extraction script not yet written. Phase A.3.
-- **Drought feature engineering** — raw CSV on disk; needs aggregation to per-(GEOID, year, forecast_date) feature rows. Phase A.5.
+- **`scripts/merge_all.py`** — final outer-join of all five feature tables into `training_master.parquet`. Phase A.6.
 - **CDL standalone download** — currently used only inside the Earth Engine script for masking. Want a local copy if HLS pipeline is built (Phase D.1).
 - **HLS imagery** — required for Phase D.1 (Prithvi as feature extractor). 2005–2013 is Landsat-only; Sentinel-2 component starts 2015. Not yet started.
 - **NAIP imagery** — tertiary; only if a phase explicitly calls for sub-meter visual context.
@@ -86,9 +105,10 @@ The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STAT
 
 ### ⚫ Deprioritized (with rationale)
 - Hourly temperature — overkill for county-annual yield; daily Tmin/Tmax + GDD is sufficient.
-- Sunrise/sunset hours — deterministic from latitude+date and modern corn hybrids are largely photoperiod-insensitive. Replaced with solar radiation from gridMET/NSRDB if needed.
+- Sunrise/sunset hours — deterministic from latitude+date and modern corn hybrids are largely photoperiod-insensitive. gridMET solar radiation covers the actually-useful signal.
 - CO₂ concentration — spatially uniform across CONUS; absorbed by `year` as a feature (which also captures technology/genetics trends).
 - Tornado activity — highly localized damage; near-zero signal at county-year aggregation. Could be replaced by NOAA Storm Events for broader severe-weather signal, but optional.
+- PRISM (vs. gridMET) — gridMET picked for daily weather. PRISM remains a viable alternative if gridMET ever shows quality issues, but no current need.
 
 ## NDVI coverage by state and year (CDL-driven)
 
@@ -111,50 +131,46 @@ The MOD13Q1 source is available 2000–present, but corn-masking depends on USDA
 
 ## Recommended full feature set (target schema for `training_master.parquet`)
 
-This is the design target — not all populated yet. Phase A is about getting them.
+This is the design target. Italicized rows are the columns currently on disk in the per-source CSVs and ready for `merge_all.py`.
 
-### Soil (from gSSURGO Valu1 table, county-aggregated via zonal stats)
-- `nccpi3corn` — National Commodity Crop Productivity Index for corn (gold-standard single soil feature)
-- `aws0_100` — available water storage in root zone, mm
-- `soc0_30` — soil organic carbon, surface 0–30 cm, g C/m²
-- `rootznemc` — root zone effective moisture capacity
-- `droughty` — drought-vulnerable soil flag
-- Optional: depth-weighted texture, pH, OM, CEC
+### Soil (from gSSURGO Valu1 table, county-aggregated via zonal stats) — ✅ all on disk
+- *`nccpi3corn`* — National Commodity Crop Productivity Index for corn
+- *`nccpi3all`* — NCCPI averaged across all crops
+- *`aws0_100`* — available water storage 0–100 cm, mm
+- *`aws0_150`* — available water storage 0–150 cm, mm
+- *`soc0_30`* — soil organic carbon 0–30 cm
+- *`soc0_100`* — soil organic carbon 0–100 cm
+- *`rootznemc`* — root zone effective moisture capacity
+- *`rootznaws`* — root zone available water storage
+- *`droughty`* — drought-vulnerable soil flag
+- *`pctearthmc`* — percent Earth surface (excludes water, urban)
+- *`pwsl1pomu`* — potential wetland soils
 
-### Climate (from PRISM or gridMET, daily, 4km, county-aggregated)
-- GDD base-50°F cap-86°F, accumulated by growth phase and to forecast date
-- EDD/KDD hours above 86°F or 90°F (heat stress, especially during silking)
-- VPD (vapor pressure deficit)
-- Tmin / Tmax monthly means
-- Precipitation totals AND distribution (e.g., cumulative + dry-spell length)
-- Drought indices (SPI / SPEI) — optional if not pulling US Drought Monitor separately
-- Solar radiation (shortwave, MJ/m²/day)
+### Climate (gridMET daily, 4km, county-aggregated) — ✅ all on disk
+- *`gdd_cum_f50_c86`* — cumulative GDD from May 1, base 50°F cap 86°F
+- *`edd_hours_gt86f`* — degree-hours above 86°F (sinusoidal interpolation, season-cum)
+- *`edd_hours_gt90f`* — degree-hours above 90°F
+- *`vpd_kpa_veg / vpd_kpa_silk / vpd_kpa_grain`* — VPD averaged over each phase window
+- *`prcp_cum_mm`* — cumulative precipitation May 1 → cutoff
+- *`dry_spell_max_days`* — longest run of <2mm/day
+- *`srad_total_veg / srad_total_silk / srad_total_grain`* — solar radiation totals per phase
 
-### Remote sensing (from Google Earth Engine, MODIS-derived; HLS as a Phase D.1 layer)
-- `ndvi_peak` — max NDVI during growing season
-- `ndvi_gs_mean` — mean NDVI during growing season
-- `ndvi_gs_integral` — sum NDVI during growing season
-- `ndvi_silking_mean` — mean NDVI during silking window (DOY 196–227)
-- `ndvi_veg_mean` — mean NDVI during vegetative phase (DOY 152–195)
+### Drought (USDM weekly, state-level, broadcast to counties) — ✅ all on disk
+- *`d0_pct, d1_pct, d2_pct, d3_pct, d4_pct`* — cumulative percent area at each severity
+- *`d2plus`* — alias for `d2_pct` (severe-or-worse), stable name for retrieval embedding
+
+### Remote sensing (MODIS via Earth Engine; HLS as a Phase D.1 layer) — ✅ all on disk for MODIS
+- *`ndvi_peak / ndvi_gs_mean / ndvi_gs_integral / ndvi_silking_mean / ndvi_veg_mean`*
 - Optional later: EVI, SIF, LAI
 - Phase D.1: Prithvi embedding from raw HLS chips (separate from MODIS NDVI)
 
-### Management (from NASS; ARMS optional)
-- Planting date / harvest date (from NASS Crop Progress)
-- Hybrid relative maturity
-- Seeding rate / plant population (already on hand for 2021–2025)
-- Tillage practice
-- N/P/K fertilizer rates (from USDA ARMS, optional)
-- Crop rotation history (derivable from CDL year-over-year)
-- Irrigation type and water applied (already on hand 2018–2023)
-- `irrigated_share`, `harvest_ratio` (derived in `nass_features.py`, already done)
+### Management (from NASS) — ✅ core columns on disk
+- *`yield_target, irrigated_share, harvest_ratio`* (engineered in `nass_features.py`)
+- *`acres_harvested_all, acres_planted_all, yield_bu_acre_irr`*
+- Optional later: planting date / harvest date (NASS Crop Progress), hybrid relative maturity, seeding rate (have for 2021–2025), tillage, N/P/K (USDA ARMS), water applied (have 2018–2023)
 
-### Topography (from USGS DEM)
-- Elevation, slope, aspect
-- Topographic Wetness Index (TWI)
-
-### Economic (optional, only for "design optimal" use case)
-- Commodity prices, input costs, crop insurance data
+### Topography (from USGS DEM) — ⚫ deprioritized for v2 baseline
+Soil features already capture much of what topography would contribute (drainage, water holding). Add later if Phase B/C show a hole.
 
 ## Pipeline structure (best-practice separation)
 
@@ -163,28 +179,33 @@ For every external data source: **separate the pull from the feature engineering
 - `scripts/nass_pull.py` → raw `scripts/nass_corn_5states_2005_2024.csv` ✅
 - `scripts/nass_features.py` → derived `scripts/nass_corn_5states_features.csv` ✅
 - `scripts/ndvi_county_extraction.js` (GEE) → raw `phase2/data/ndvi/corn_ndvi_5states_<year>.csv` × 21 ✅
-- `scripts/gssurgo_extract.py` → `scripts/gssurgo_county_features.csv` ⬜
-- `scripts/prism_pull.py` → raw daily netcdf or parquet ⬜
-- `scripts/prism_features.py` → `scripts/prism_county_features.csv` ⬜
-- `scripts/drought_features.py` → `scripts/drought_county_features.csv` ⬜
+- `scripts/gssurgo_county_features.py` → `scripts/gssurgo_county_features.csv` ✅
+- `scripts/gridmet_pull.py` → raw `data/v2/weather/raw/gridmet_county_daily_<year>.parquet` × 20 + combined parquet ✅
+- `scripts/weather_features.py` → `scripts/weather_county_features.csv` ✅
+- `scripts/drought_features.py` → `scripts/drought_county_features.csv` ✅
 - `scripts/merge_all.py` → `scripts/training_master.parquet` ⬜
 
 ## Decisions made (with rationale)
 
 These are now logged in `PHASE2_DECISIONS_LOG.md` as the canonical record. Restated here for orientation:
 
-1. **County-level aggregation, not pixel-level** — matches NASS reporting unit and avoids massive computation for marginal gain.
-2. **Server-side aggregation in Earth Engine** — output CSV is already summarized to county-year, eliminating local zonal stats on imagery.
-3. **Separate raw-pull script from feature-engineering script** — see "Pipeline structure" above.
-4. **Use the Valu1 table for soil aggregation** instead of manually weighting components/horizons — Valu1 is USDA's official pre-aggregation and covers 90% of common ML use cases including the corn-specific NCCPI index.
-5. **Skip hourly weather, day length, and CO₂** — see Deprioritized section.
-6. **Use combined-practice yield as the target** — `yield_bu_acre_all` has full coverage; irrigation effect is captured via `irrigated_share` where data exists.
-7. **TIGER/Line 2018 county boundaries** for spatial reduction in Earth Engine — stable across the 2005–2024 time range.
-8. **Time range 2005–2024 per the brief.** Train 2005–2022, val 2023, holdout 2024.
-9. **MODIS NDVI is the primary remote-sensing feature for the engineered baseline.** Raw HLS is deferred to Phase D.1 (Prithvi). MODIS NDVI and HLS are *complementary*, not substitutes.
-10. **PRISM (or gridMET) is the daily weather source** — both work; PRISM is US-only and more focused. Decide finally when `prism_pull.py` is written.
-11. **NDVI per-year file structure (Phase A.2):** GEE script enqueues one Export task per year rather than a single multi-year export. Output is 21 CSVs; concatenated by `merge_all.py` later. Cleaner failure mode (one bad year doesn't kill the run) and matches what's already on disk.
-12. **NDVI is pre-scaled in the CSV (Phase A.2):** the GEE script applies `× 0.0001` server-side; downstream code must NOT re-apply.
+1. **County-level aggregation, not pixel-level** — matches NASS reporting unit.
+2. **Server-side aggregation in Earth Engine** — NDVI CSVs already at county-year.
+3. **Separate raw-pull script from feature-engineering script** — see "Pipeline structure".
+4. **Use the Valu1 table for soil aggregation** — USDA's official pre-aggregation, covers 90% of common ML use cases including NCCPI.
+5. **Skip hourly weather, day length, and CO₂.**
+6. **Use combined-practice yield as the target.**
+7. **TIGER/Line 2018 county boundaries** for spatial reduction.
+8. **Time range 2005–2024** per the brief. Train 2005–2022, val 2023, holdout 2024.
+9. **MODIS NDVI is the primary remote-sensing feature for the engineered baseline.** Raw HLS deferred to Phase D.1.
+10. **gridMET (not PRISM) is the daily weather source** — decided when `gridmet_pull.py` was written. gridMET is a standardized 4km daily surface for 1979+, easier to acquire programmatically than PRISM, and for the heat/precip-stress signals we care about there's no quality difference at the county-aggregation scale.
+11. **NDVI per-year file structure:** GEE script enqueues one Export task per year. Cleaner failure mode.
+12. **NDVI is pre-scaled in the CSV:** the GEE script applies `× 0.0001` server-side; downstream code must NOT re-apply.
+13. **GDD uses Fahrenheit base 50 / cap 86 with both endpoints capped** (McMaster & Wilhelm / NDAWN convention, not the raw `tavg − 50` variant).
+14. **EDD/KDD uses single-sine hourly interpolation** (Allen 1976 / Baskerville-Emin 1969) for degree-hours above 86°F and 90°F. Captures sub-daily heat exposure that simple `max(0, tmax − 86)` misses.
+15. **USDM is published at state level only.** Despite earlier planning notes saying "per county," the actual source CSV has only `StateAbbreviation`. State readings are broadcast to every GEOID in that state.
+16. **USDM as-of join uses `valid_end < forecast_date` (strict).** Prevents same-week leakage even when the USDM map's validity span brackets the forecast date.
+17. **Drought feature set is minimal: D0–D4 + d2plus.** No DSCI, no season-cum drought weeks, no silking-peak DSCI in this iteration. Can be added later if Phase B shows the model wants more drought signal than the cumulative percentages provide.
 
 ## Important data-quality fixes already discovered (NASS)
 
@@ -216,9 +237,12 @@ All datasets join on `GEOID` (5-digit string: state FIPS zero-padded to 2 + coun
 - Earth Engine `ee.Number` cannot be JS-concatenated into asset paths; use `ImageCollection.filter()` instead.
 - CDL coverage is uneven before 2008 — see "NDVI coverage by state and year" table above.
 - TIGER 2018 includes independent cities (e.g., St. Louis 29510) — they appear in row counts but always emit null NDVI.
+- USDM source CSV is **state-level**, not county-level. Source has only `StateAbbreviation`. `drought_features.py` broadcasts to GEOIDs.
+- USDM percentages are cumulative: D0 ≥ D1 ≥ D2 ≥ D3 ≥ D4. "D2+" is identical to D2 itself.
+- Windows download artifacts: files brought across via the chat carry `:Zone.Identifier` siblings. Clean with `find . -name '*:Zone.Identifier' -delete`.
 
 ### Inherited from v1 (still apply for shared infrastructure)
-- `conda activate landuse` per session.
+- `conda activate landuse2` per session.
 - `--app-dir .` required for uvicorn from repo root.
 - `python-multipart` is a separate `pip install` from `fastapi`.
 - `pkill -f uvicorn` before relaunch (background `&` doesn't kill cleanly).
@@ -235,42 +259,54 @@ All datasets join on `GEOID` (5-digit string: state FIPS zero-padded to 2 + coun
 
 ```
 USDAhackathon2026April/
-├── PHASE2_PROJECT_PLAN.md                     # v2 vision + locked decisions
-├── PHASE2_PHASE_PLAN.md                       # v2 phase breakdown A–G
-├── PHASE2_CURRENT_STATE.md                    # ← THIS FILE
-├── PHASE2_DATA_INVENTORY.md                   # v2 live data tracker
-├── PHASE2_DECISIONS_LOG.md                    # v2 append-only decisions
-├── fileStructure.txt
-├── requirements.txt
-├── requirements-windows.txt
-├── agent/                                     # v1 agent package (untouched)
-├── backend/                                   # v1 FastAPI app (untouched)
-├── docs/                                      # v1 doc artifacts
-├── frontend/                                  # v1 frontend (untouched)
-├── inference_outputs/                         # v1 segmentation outputs
-├── model/                                     # v1 SegFormer checkpoint
+├── docs/
+│   ├── PHASE2_PROJECT_PLAN.md                  # v2 vision + locked decisions
+│   ├── PHASE2_PHASE_PLAN.md                    # v2 phase breakdown A–G
+│   ├── PHASE2_CURRENT_STATE.md                 # ← THIS FILE
+│   ├── PHASE2_DATA_INVENTORY.md                # v2 live data tracker
+│   ├── PHASE2_DECISIONS_LOG.md                 # v2 append-only decisions
+│   └── (v1 docs: CURRENT_STATE.md, etc.)
+├── data/
+│   └── v2/
+│       ├── tiger/                              # county polygons used by zonal stats
+│       └── weather/
+│           └── raw/
+│               ├── _gridmet_nc_cache/          # cached netcdfs
+│               └── gridmet_county_daily_<year>.parquet × 20    ✅
 ├── phase2/
 │   └── data/
 │       ├── drought/
-│       │   └── drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv  ✅ raw
-│       └── ndvi/
-│           ├── corn_ndvi_5states_2004.csv     ✅ (21 files, 2004–2024)
-│           └── ... corn_ndvi_5states_2024.csv
-├── scripts/                                   # ← Data pipeline lives here
+│       │   └── drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv  ✅
+│       ├── gSSURGO/
+│       │   └── gSSURGO_<state>/gSSURGO_<state>.gdb × 5         ✅
+│       ├── ndvi/
+│       │   └── corn_ndvi_5states_<year>.csv × 21               ✅
+│       └── tiger/
+│           ├── tl_2018_us_county/                               ✅
+│           └── tl_2018_us_county_5states_5070.gpkg              ✅
+├── scripts/                                    # ← Data pipeline lives here
 │   ├── (v1) dataset.py, train.py, infer.py, emissions.py, etc.
-│   ├── nass_pull.py                           ✅ written, run for 2005–2024
-│   ├── nass_features.py                       ✅ written
-│   ├── nass_corn_5states_2005_2024.csv        ✅ canonical NASS output
-│   ├── nass_corn_5states_features.csv         ✅ engineered features
-│   ├── ndvi_county_extraction.js              ✅ version-controlled (per-year exports)
-│   ├── gssurgo_extract.py                     ⬜ to write (Phase A.3)
-│   ├── prism_pull.py                          ⬜ to write (Phase A.4)
-│   ├── prism_features.py                      ⬜ to write (Phase A.4)
-│   ├── drought_features.py                    ⬜ to write (Phase A.5)
-│   └── merge_all.py                           ⬜ final join → training_master.parquet (Phase A.6)
-├── smoke_agent.py                             # v1 smoke test
-├── smoke_tools.py                             # v1 smoke test
-└── preview.jpg
+│   ├── nass_pull.py                            ✅ written, run for 2005–2024
+│   ├── nass_features.py                        ✅ written
+│   ├── nass_corn_5states_2005_2024.csv         ✅ canonical NASS output
+│   ├── nass_corn_5states_features.csv          ✅ engineered features
+│   ├── ndvi_county_extraction.js               ✅ version-controlled (per-year exports)
+│   ├── gssurgo_county_features.py              ✅ written, run for all 5 states (Phase A.3)
+│   ├── gssurgo_county_features.csv             ✅ output (443 rows × 13 cols)
+│   ├── gridmet_pull.py                         ✅ written, run for 2005–2024 (Phase A.4)
+│   ├── gridmet_county_daily_2005_2024.parquet  ✅ combined daily weather
+│   ├── weather_features.py                     ✅ written, run (Phase A.4)
+│   ├── weather_county_features.csv             ✅ output (35,440 rows × 14 cols)
+│   ├── drought_features.py                     ✅ written, run (Phase A.5)
+│   ├── drought_county_features.csv             ✅ output (27,336 rows × 9 cols)
+│   └── merge_all.py                            ⬜ final join → training_master.parquet (Phase A.6)
+├── agent/                                       # v1 agent package (untouched)
+├── backend/                                     # v1 FastAPI app (untouched)
+├── frontend/                                    # v1 frontend (untouched)
+├── inference_outputs/                           # v1 segmentation outputs
+├── model/                                       # v1 SegFormer checkpoint
+├── smoke_agent.py                               # v1 smoke test
+└── smoke_tools.py                               # v1 smoke test
 ```
 
 ## What v2 will reuse from v1 (no modification)
@@ -291,9 +327,9 @@ USDAhackathon2026April/
 ## Known issues / open architectural questions
 
 - **HLS pull strategy not yet designed.** TB-scale download for 5 states × 20 years × growing-season scenes. Need to settle storage location, idempotent download orchestration, and whether to pull every available scene or only the ~12 scenes leading up to each forecast date. **2005–2013 is Landsat-only HLS** (Sentinel-2 component begins 2015); cadence is lower in early years. Decision deferred until Phase B baseline ships and we know whether Phase D.1 is worth the data-engineering cost.
-- **Drought feature engineering details.** USDM raw CSV is on disk but the per-(GEOID, year, forecast_date) feature table not yet built. Decisions to make: which D-level severities to include (sum of D2+? individual D0–D4?), how to as-of-resample weekly readings to forecast dates (last reading before forecast date? trailing-N-week mean?). Phase A.5.
-- **gSSURGO MUKEY → property rasterization** — straightforward but slow. Consider caching the per-property GeoTIFFs to avoid recomputing on every feature pass.
 - **NASS non-irrigated columns** — sparse in the pull. Derivable from `acres_harvested_all − acres_harvested_irr` for fields where irrigated coverage exists; for fields where irrigated coverage is also sparse, this is a known gap. Re-running `nass_pull.py` with the rate-limit fixes for non-irrigated specifically is optional, low-priority.
+- **NDVI 2005–2007 is patchy for CO and partially for MO.** Planned mitigation is per-county analog retrieval (a CO county draws analogs from its own history only, so coverage variation across states does not contaminate matching). If Phase B reveals problems, fall-back is to filter to ≥N years of complete data per county.
+- **Drought feature parsimony.** Current set is intentionally minimal (D0–D4 + d2plus). DSCI / season-cumulative drought weeks / silking peak DSCI are easy adds if Phase B / C show the model wants richer drought signal. Current decision: ship the minimal set, see if it carries weight, add if not.
 
 ## Hackathon readiness checklist
 
@@ -303,10 +339,11 @@ USDAhackathon2026April/
 - [x] GEE NDVI export complete for 2004–2024 (21 per-year CSVs in `phase2/data/ndvi/`)
 - [x] `ndvi_county_extraction.js` saved into `scripts/` for version control
 - [x] US Drought Monitor raw CSV pulled for 5 states
-- [ ] `scripts/gssurgo_extract.py` written; per-county soil features CSV produced (Phase A.3)
-- [ ] `scripts/prism_pull.py` + `scripts/prism_features.py` written; per-county weather features produced 2005–2024 (Phase A.4)
-- [ ] `scripts/drought_features.py` written; per-(GEOID, year, forecast_date) drought features produced (Phase A.5)
+- [x] `scripts/gssurgo_county_features.py` written; per-county soil features CSV produced (Phase A.3)
+- [x] `scripts/gridmet_pull.py` + `scripts/weather_features.py` written; per-county weather features produced 2005–2024 (Phase A.4)
+- [x] `scripts/drought_features.py` written; per-(GEOID, year, forecast_date) drought features produced (Phase A.5)
 - [ ] `scripts/merge_all.py` written; `training_master.parquet` built (Phase A.6)
+- [ ] `PHASE2_DATA_DICTIONARY.md` written (Phase A.7)
 - [ ] Phase A definition-of-done met (master table loads, no surprise nulls, spot-check passes)
 - [ ] Phase B analog-year retrieval baseline shipped + Phase B gate passed
 - [ ] Phase C XGBoost point-estimate model shipped + Phase C gate passed
@@ -318,15 +355,12 @@ USDAhackathon2026April/
 
 ## Immediate next steps (recommended order)
 
-1. **Write `scripts/prism_pull.py`** to start the slow daily-weather download running in the background. PRISM (or gridMET) for 5 states, 2005–2024, daily Tmax/Tmin/Prcp/Srad/VP. The pull is the long pole; kick it off first so it can churn while other code is being written.
-2. **Write `scripts/gssurgo_extract.py`** while PRISM downloads. Files are already on disk. Read .gdb, pull Valu1 table, build per-property GeoTIFFs, run zonal stats over TIGER 2018 county polygons. Output: `scripts/gssurgo_county_features.csv` keyed on GEOID. Soil features are static across years.
-3. **Write `scripts/prism_features.py`** once raw PRISM data is on disk. Derive GDD (base 50°F, cap 86°F), EDD/KDD, VPD, cumulative precip, monthly summaries. **Critical:** respect the as-of rule for each forecast date — when constructing features for forecast date `D` in year `Y`, use only data with timestamps strictly before `D`.
-4. **Write `scripts/drought_features.py`** — small, self-contained. Read USDM raw CSV; resample weekly readings to per-(GEOID, year, forecast_date) as-of values. Decide D-level severity aggregation.
-5. **Write `scripts/merge_all.py`** — outer-join NASS features (per-(GEOID, year)), NDVI (per-(GEOID, year), concatenated from 21 per-year CSVs), gSSURGO (per-GEOID, broadcast across years), PRISM features (per-(GEOID, year, forecast_date)), drought features (per-(GEOID, year, forecast_date)). Output: `scripts/training_master.parquet`.
-6. **Write `PHASE2_DATA_DICTIONARY.md`** documenting every column in `training_master.parquet`.
-7. **Begin Phase B** — feature standardization + nearest-neighbor analog retrieval. Backtest cone calibration on 2023 + 2024.
-8. **Begin Phase C** — XGBoost baseline once the master table is stable.
-9. **Decide on HLS pull** at the Phase B → Phase D boundary, after the engineered baseline tells us whether the additional data-engineering cost for Prithvi is justified.
+1. **Write `scripts/merge_all.py`** — outer-join NASS features (per-(GEOID, year)), NDVI (per-(GEOID, year), concatenated from 21 per-year CSVs), gSSURGO (per-GEOID, broadcast across years), gridMET-derived weather features (per-(GEOID, year, forecast_date)), drought features (per-(GEOID, year, forecast_date)). Output: `scripts/training_master.parquet`. **This is the only Phase A item left.**
+2. **Write `PHASE2_DATA_DICTIONARY.md`** documenting every column in `training_master.parquet`. **Phase A.7.**
+3. **Verify Phase A definition-of-done**: master table loads, no surprise nulls in feature columns, 5-row spot check against original sources passes.
+4. **Begin Phase B** — feature standardization + nearest-neighbor analog retrieval. Backtest cone calibration on 2023 + 2024.
+5. **Begin Phase C** — XGBoost baseline once the master table is stable.
+6. **Decide on HLS pull** at the Phase B → Phase D boundary, after the engineered baseline tells us whether the additional data-engineering cost for Prithvi is justified.
 
 ## Optional / future work
 
@@ -336,6 +370,7 @@ USDAhackathon2026April/
 - USDA ARMS for fertilizer/management features.
 - Crop progress reports for planting-date features.
 - Process-based crop model integration (APSIM / DSSAT) for counterfactual reasoning — the "design optimal" stretch goal.
+- Add DSCI / season-cum drought weeks / silking-peak DSCI to drought features if Phase B/C show the model wants more drought signal.
 
 ## Budget note
 

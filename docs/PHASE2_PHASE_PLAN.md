@@ -22,7 +22,7 @@ Claude will read `PHASE2_PROJECT_PLAN.md`, this file, `PHASE2_DECISIONS_LOG.md`,
 
 ## Phase index
 
-- **Phase A — Data acquisition & cleaning** (currently in progress)
+- **Phase A — Data acquisition & cleaning** (A.1–A.5 ✅, A.6 + A.7 remaining)
 - **Phase B — Feature engineering & analog-year retrieval baseline** (cone-of-uncertainty MVP)
 - **Phase C — Point-estimate model** (XGBoost / LightGBM baseline)
 - **Phase D — Prithvi integration** (frozen feature extractor → optional fine-tune)
@@ -40,72 +40,76 @@ Explicit **GO/NO-GO checkpoints** at the end of B, C, and D.
 
 The Phase A pipeline follows the script-level structure already established in the repo: each external data source has a separate `*_pull.py` (raw acquisition, slow, rate-limited) and `*_features.py` (local processing, fast iteration). Final join in `merge_all.py`.
 
-### A.1 — NASS yield + auxiliary, extended to 2005
+### A.1 — NASS yield + auxiliary, extended to 2005 ✅
 
-- `scripts/nass_pull.py` — already written. Rate-limit fixes (2.0s delay, exponential backoff up to 240s, 4 retries) committed. Currently has 2,998 rows × 12 cols for 2015–2024 with full coverage on combined-practice columns.
-- **Action:** re-run for 2005–2024 to extend the history backward. The brief specifies 2005-2024 explicitly. ~2× more training years means ~2× analog-year candidates, which makes Phase B materially stronger.
-- **Action:** write `scripts/nass_features.py` — pure local processing on the raw CSV. Produces `scripts/nass_corn_5states_features.csv` with derived columns:
+- `scripts/nass_pull.py` — written. Rate-limit fixes (2.0s delay, exponential backoff up to 240s, 4 retries) committed. Run for full 2005–2024 range.
+- `scripts/nass_features.py` — written. Pure local processing on the raw CSV. Produces `scripts/nass_corn_5states_features.csv` with derived columns:
   - `yield_target = yield_bu_acre_all`
   - `irrigated_share = (acres_harvested_irr / acres_harvested_all).fillna(0).clip(0,1)`
   - `harvest_ratio = (acres_harvested_all / acres_planted_all).clip(0,1)`
   - `acres_harvested_noirr_derived = acres_harvested_all - acres_harvested_irr.fillna(0)`
 - **Schema:** keys `GEOID, state_alpha, year`; outputs above; coverage notes documented inline.
-- **Deliverable:** parquet/CSV with no missing years for major corn counties; QC report on county coverage by year.
+- **Outputs on disk:** `scripts/nass_corn_5states_2005_2024.csv` (6,837 × 16); `scripts/nass_corn_5states_features.csv` (6,834 × 10).
 
-### A.2 — MODIS NDVI via Earth Engine (already in flight)
+### A.2 — MODIS NDVI via Earth Engine ✅
 
-- Earth Engine script written, debugged, export task `corn_ndvi_5states_2015_2024` submitted to Google Drive.
-- **Action:** when current export lands, **re-run for 2005–2014** to backfill (server-side; cheap). New task name suggested: `corn_ndvi_5states_2005_2014`.
-- **Action:** save the GEE script into `scripts/ndvi_county_extraction.js` for version control. Currently lives only in the GEE web editor.
-- **Output schema (already locked):** `GEOID, NAME, STATEFP, year, ndvi_peak, ndvi_gs_mean, ndvi_gs_integral, ndvi_silking_mean, ndvi_veg_mean`.
-- **CDL caveat:** CDL 2024 may not exist yet (publishes Jan/Feb of following year). If 2024 fails, set `endYear=2023`. CDL 2005 is the earliest available; corn-pixel masking works back to 2005.
-- **Deliverable:** combined `corn_ndvi_5states_2005_2024.csv` keyed on `(GEOID, year)`.
+- Earth Engine script written, debugged, ran for 2004–2024 (one task per year).
+- `scripts/ndvi_county_extraction.js` — version-controlled in the repo.
+- **Output schema (locked):** `GEOID, NAME, STATEFP, year, ndvi_peak, ndvi_gs_mean, ndvi_gs_integral, ndvi_silking_mean, ndvi_veg_mean`.
+- **NDVI is pre-scaled** (× 0.0001 applied server-side); CSV values are floats in `[-0.2, 1.0]`. Downstream MUST NOT re-apply the scale factor.
+- **CDL caveat:** uneven coverage 2005–2007 (CO essentially absent until 2008). Documented in `PHASE2_CURRENT_STATE.md`.
+- **Outputs on disk:** 21 per-year CSVs in `phase2/data/ndvi/corn_ndvi_5states_<year>.csv`. To be concatenated by `merge_all.py`.
 
-### A.3 — gSSURGO soil features
+### A.3 — gSSURGO soil features ✅
 
-- State `.gdb` files already downloaded (10m resolution) for all 5 states. Skipped the CONUS download (only 30m, >40GB).
-- **Action:** write `scripts/gssurgo_extract.py`:
-  1. Read `.gdb` with GDAL/OGR via geopandas + rasterio.
-  2. Use the **Valu1 table** that ships inside each `.gdb` — already aggregated to MUKEY level (no need to manually weight components/horizons). Valu1 covers 90% of common ML use cases including the corn-specific NCCPI index.
-  3. Key Valu1 columns for corn: `nccpi3corn`, `aws0_100`, `soc0_30`, `rootznemc`, `droughty`. Add depth-weighted texture, pH, OM, CEC if needed.
-  4. Build per-property GeoTIFF rasters by remapping MUKEY → property value.
-  5. Run zonal statistics over TIGER/Line 2018 county polygons to get one number per county per property.
-- **Reproject before zonal stats:** gSSURGO is in EPSG:5070 (Albers Equal Area).
-- **Deliverable:** `scripts/gssurgo_county_features.csv` with `GEOID` + ~6–10 soil columns. Static across years (soil doesn't change with year), so this table joins on `GEOID` alone.
+- State `.gdb` files downloaded (10m resolution) for all 5 states in `phase2/data/gSSURGO/`. Skipped CONUS download (only 30m, >40GB).
+- `scripts/gssurgo_county_features.py` — written, run for all 5 states.
+- **Method:**
+  1. Read each `.gdb` via geopandas/rasterio.
+  2. Pull the **Valu1 table** that ships inside each `.gdb` (USDA's pre-aggregated MUKEY-level table).
+  3. Build per-property GeoTIFFs by remapping MUKEY → property values.
+  4. Reproject TIGER 2018 county polygons to EPSG:5070 (gSSURGO's native Albers).
+  5. Run zonal statistics over county polygons.
+- **Final column set:** `nccpi3corn, nccpi3all, aws0_100, aws0_150, soc0_30, soc0_100, rootznemc, rootznaws, droughty, pctearthmc, pwsl1pomu` (11 properties).
+- **Output:** `scripts/gssurgo_county_features.csv` keyed on `GEOID` + `state_alpha` (443 rows × 13 cols, static across years; broadcast at merge time).
 
-### A.4 — Daily weather (PRISM or gridMET)
+### A.4 — Daily weather (gridMET) ✅
 
-- **Action:** write `scripts/prism_pull.py` for 5 states, **2005–2024**, daily.
+- Picked **gridMET** over PRISM. Both work at county-aggregation scale; gridMET was easier to acquire programmatically. PRISM stays as a fallback if gridMET ever shows quality issues.
+- `scripts/gridmet_pull.py` — written, run for 5 states, **2005–2024**, daily.
   - Variables: `tmax, tmin, prcp, srad, vp` daily.
-- **Action:** write `scripts/prism_features.py` to derive:
-  - **Growing Degree Days (GDD)** with base 50°F, cap 86°F (corn standard).
-  - **Cumulative GDD** from May 1 through each forecast date.
-  - **EDD/KDD** hours above 86°F or 90°F (heat stress, especially during silking).
-  - **VPD** (vapor pressure deficit).
-  - **Cumulative precip** May 1 → forecast date, plus dry-spell length.
-  - Solar radiation totals.
-- **Critical:** all aggregations respect the **as-of rule** — when constructing features for forecast date `D` in year `Y`, use only data with timestamps strictly before `D`. Enforced at the feature-construction layer.
-- **Deliverable:** `scripts/prism_county_features.csv` keyed on `(GEOID, year, forecast_date)`.
+  - Outputs: `data/v2/weather/raw/gridmet_county_daily_<year>.parquet` × 20, plus combined `scripts/gridmet_county_daily_2005_2024.parquet`. Cached netcdfs in `data/v2/weather/raw/_gridmet_nc_cache/` for idempotent re-runs.
+- `scripts/weather_features.py` — written, run. Derives:
+  - **GDD F50/C86** — Fahrenheit base 50 / cap 86, both endpoints capped before averaging (McMaster & Wilhelm / NDAWN convention; not the raw `tavg − 50` variant). Cumulative from May 1 → cutoff.
+  - **EDD/KDD hours above 86°F / 90°F** via single-sine hourly interpolation (Allen 1976 / Baskerville-Emin 1969). Closed-form integral of the daily sine arc over the threshold.
+  - **VPD** averaged over each phase window (vegetative DOY 152–195, silking DOY 196–227, grain fill DOY 228–273), clipped to cutoff.
+  - **Cumulative precipitation** May 1 → cutoff plus longest dry-spell run (`<2 mm/day`).
+  - **Solar radiation totals** per phase window, MJ/m².
+- **As-of safety:** `build_features_for_cutoff(df, year, cutoff_date)` slices the daily df at the very top with `date <= cutoff_date`. Single point of leakage control. Phase windows clipped to `cutoff_doy`.
+- **Output:** `scripts/weather_county_features.csv` (35,440 rows × 14 cols). Keys: `(GEOID, year, forecast_date)`.
 
-### A.5 — US Drought Monitor features
+### A.5 — US Drought Monitor features ✅
 
-- ✅ **Data acquired** in Cumulative Percent Area format (5 states, weekly, 2005–2024, county level). Each D-level column reports % of county at that level *or worse*.
-- **Action:** write `scripts/drought_features.py`. No external pull; pure local processing on the USDM CSV.
-- Derived features per `(GEOID, year, forecast_date)`:
-  - **Most-recent reading**: D0/D1/D2/D3/D4 cumulative percentages as-of the last USDM Thursday strictly before the forecast date.
-  - **DSCI** (Drought Severity Coverage Index): `D0 + D1 + D2 + D3 + D4` cumulative sum, range 0–500. Strong candidate for the retrieval embedding.
-  - **Season-cumulative drought weeks**: count of weeks since May 1 where D2 ≥ 50% (sustained-stress signal).
-  - **Peak DSCI during silking** (DOY 196–227): max DSCI in that 4-week window. Silking is when corn is most water-sensitive.
-- **As-of join rule:** USDM week-ending dates are Thursdays. Use the most recent Thursday strictly *before* the forecast date (not ≤) to avoid same-week leakage.
-- **Deliverable:** `scripts/drought_county_features.csv` keyed on `(GEOID, year, forecast_date)`.
+- **Source caveat discovered during this phase:** the USDM CSV is **state-level**, not county-level (header is `MapDate,StateAbbreviation,StatisticFormatID,ValidStart,ValidEnd,D0,D1,D2,D3,D4,None,Missing` — no county FIPS). Earlier planning notes saying "per-county" were aspirational. State readings are broadcast to GEOIDs at feature-derivation time.
+- **USDM percentages are cumulative:** D0 ≥ D1 ≥ D2 ≥ D3 ≥ D4 by construction. Each column reports % of state at that level *or worse*.
+- `scripts/drought_features.py` — written, run. No external pull; pure local processing.
+- **Method:**
+  1. Read the USDM CSV; rename `StateAbbreviation → state_alpha`; coerce `ValidEnd → valid_end`.
+  2. Read `nass_corn_5states_features.csv` as the GEOID directory (provides every `(GEOID, state_alpha, year)` triple).
+  3. For each `(state, year, forecast_date)` in `{08-01, 09-01, 10-01, EOS}`, find the most recent USDM reading whose `valid_end < forecast_date` (strict — strictly before, never on or after).
+  4. Build full `(GEOID, year, forecast_date)` cartesian skeleton, left-join state features.
+- **Final feature set (intentionally minimal):** `d0_pct, d1_pct, d2_pct, d3_pct, d4_pct, d2plus`. `d2plus` is a stable alias for `d2_pct` (severe-or-worse, exposed under a descriptive name because the cumulative convention is non-obvious).
+- **DSCI / season-cum drought weeks / silking-peak DSCI deferred.** Easy adds if Phase B/C show the model wants more drought signal. See decisions log entry 2-A.5.
+- **As-of comparison column:** `ValidEnd`. Strict `<` prevents same-week leakage when the USDM map's validity span brackets the forecast date.
+- **Output:** `scripts/drought_county_features.csv` (27,336 rows × 9 cols, 0 nulls, 0 monotonicity violations). Keys: `(GEOID, year, forecast_date)`.
 
 ### A.6 — Master training table
 
 - **Action:** write `scripts/merge_all.py`. Outer-joins:
   - `nass_corn_5states_features.csv` on `(GEOID, year)`
-  - `corn_ndvi_5states_2005_2024.csv` on `(GEOID, year)`
-  - `gssurgo_county_features.csv` on `(GEOID,)` — broadcasts soil features across all years
-  - `prism_county_features.csv` on `(GEOID, year, forecast_date)`
+  - 21 NDVI per-year CSVs from `phase2/data/ndvi/corn_ndvi_5states_<year>.csv`, concatenated, on `(GEOID, year)`
+  - `gssurgo_county_features.csv` on `GEOID` — broadcasts soil features across all years
+  - `weather_county_features.csv` on `(GEOID, year, forecast_date)`
   - `drought_county_features.csv` on `(GEOID, year, forecast_date)`
 - **Schema:**
   - keys: `GEOID, state_alpha, year, forecast_date`
@@ -128,7 +132,7 @@ The Phase A pipeline follows the script-level structure already established in t
 ### B.1 — Standardize feature vectors
 
 - For each `(GEOID, year, forecast_date)` row, build a fixed-length feature vector. Standardization is per-feature z-score over the training set (excluding holdout).
-- Decide which subset of features goes into the **retrieval embedding** vs. which are kept as covariates only. Conservative starting set for retrieval: `[cum_GDD, cum_precip, drought_severity, ndvi_gs_mean_to_date, planted_acres_ratio, soil_aws0_100]`.
+- Decide which subset of features goes into the **retrieval embedding** vs. which are kept as covariates only. Conservative starting set for retrieval: `[gdd_cum_f50_c86, prcp_cum_mm, d2plus, ndvi_gs_mean_to_date, irrigated_share, aws0_100]`.
 - **Deliverable:** `forecast/features.py` with `build_feature_vector(geoid, year, date)` and `embedding_for_retrieval(features)`.
 
 ### B.2 — Nearest-neighbor retrieval
@@ -339,11 +343,12 @@ Update top-level README to reference v2 alongside v1. New `PHASE2_README.md` if 
 - **Prithvi integration complexity.** Foundation models have weird input expectations (band order, normalization, patch sizes). Plan a half-day buffer just for "make Prithvi accept our HLS chips correctly."
 - **Cone calibration.** Analog-year retrieval is interpretable but not guaranteed to give well-calibrated coverage. Phase B gate exists precisely to catch this.
 - **CDL spatial alignment.** CDL 30m, HLS 30m, but reprojections can introduce subpixel shifts that contaminate corn-only feature aggregation. Test alignment explicitly if HLS is pulled.
-- **Temporal leakage.** When training, if features include data not available at the forecast date (e.g., October NDVI in the August forecast), the model looks great in val and dies in production. As-of rule enforced in `forecast/features.py`.
-- **County coverage gaps.** Not every county grows enough corn to have a NASS yield reported every year. Filter to counties with ≥N years of complete data (decide N in Phase A.1 once full 2005–2024 pull is done).
-- **NASS rate limiting.** Azure App Gateway throttles aggressive request patterns. Fixes already in `nass_pull.py`; the historical extension to 2005 will exercise them.
+- **Temporal leakage.** When training, if features include data not available at the forecast date (e.g., October NDVI in the August forecast), the model looks great in val and dies in production. As-of rule enforced in `weather_features.py` and `drought_features.py`.
+- **County coverage gaps.** Not every county grows enough corn to have a NASS yield reported every year. Filter to counties with ≥N years of complete data (decide N after `merge_all.py` lands and a `notna().sum()` pass per county).
+- **NASS rate limiting.** Azure App Gateway throttles aggressive request patterns. Fixes already in `nass_pull.py`.
 - **HLS 2005–2013 sparsity.** Landsat-only era; lower revisit cadence than 2015+. Phase D.1 should account for this when picking "most recent cloud-free chip" near forecast dates in early years.
-- **gSSURGO size.** Aggregate to county-level features early in A.3; do not carry pixel-level soil data into modeling.
+- **gSSURGO size.** Aggregate to county-level features early in A.3; do not carry pixel-level soil data into modeling. ✅ Done — `gssurgo_county_features.csv` is 443 rows.
+- **Drought features are state-level.** USDM doesn't have county granularity in the source CSV — drought signal is constant within a state for a given week. May limit per-county analog matching value; if so, drop USDM from the retrieval embedding (keep as covariate) in Phase B.
 
 ## Conventions (carried over from v1)
 
