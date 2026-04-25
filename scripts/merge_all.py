@@ -91,6 +91,12 @@ WEATHER_FEATURE_COLS = ["gdd_cum_f50_c86", "edd_hours_gt86f", "edd_hours_gt90f",
                         "prcp_cum_mm", "dry_spell_max_days",
                         "srad_total_veg", "srad_total_silk", "srad_total_grain"]
 DROUGHT_FEATURE_COLS = ["d0_pct", "d1_pct", "d2_pct", "d3_pct", "d4_pct", "d2plus"]
+# HLS pull pipeline writes some audit/meta columns alongside features
+# (e.g. `is_forecast`, `n_granules`). These are useful for upstream debugging
+# but must not flow into training as features — `is_forecast` is object dtype
+# (semantic flag) and `n_granules` is a count, not a vegetation index. Allowlist
+# the actual features here; everything else from HLS gets dropped at load time.
+HLS_FEATURE_COLS     = ["ndvi_mean", "ndvi_std", "evi_mean", "evi_std"]
 
 
 # --- Helpers ---------------------------------------------------
@@ -136,11 +142,25 @@ HLS_FORECAST_DATE_MAP = {
 }
 
 
-def load_nass(path):
-    """Load NASS features. Returns DataFrame with normalized GEOID."""
+def load_nass(path, min_year=2005):
+    """Load NASS features. Returns DataFrame with normalized GEOID.
+
+    Filters to year >= min_year (default 2005). The NASS pull/features pipeline
+    incidentally produced a 2004 row block (~366 rows) from upstream queries,
+    but weather features only start in 2005 (gridMET extraction window). Keeping
+    the 2004 block produces ~1,464 skeleton rows with structural NaN for every
+    weather and grain-phase feature — which would silently corrupt training/
+    retrieval downstream. Dropping at the source-load layer is the cleanest fix.
+    """
     print(f"  reading NASS:    {path}")
     df = pd.read_csv(path)
     df["GEOID"] = fix_geoid(df["GEOID"])
+    n_before = len(df)
+    df = df[df["year"] >= min_year].reset_index(drop=True)
+    n_dropped = n_before - len(df)
+    if n_dropped:
+        print(f"    dropped {n_dropped:,} rows with year < {min_year} "
+              f"(weather coverage starts 2005)")
     print(f"    {len(df):,} rows  ({df['year'].min()}..{df['year'].max()}, "
           f"{df['GEOID'].nunique()} GEOIDs)")
     return df
@@ -176,6 +196,16 @@ def load_ndvi(glob_pattern):
         frames.append(df)
     df = pd.concat(frames, ignore_index=True)
     df["GEOID"] = fix_geoid(df["GEOID"])
+    # If the GEE export schema ever changes (e.g. column renamed), the per-file
+    # filter above silently drops it and we'd merge zero NDVI features without
+    # noticing. Guard against that.
+    missing = [c for c in NDVI_FEATURE_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Expected NDVI feature columns missing from input CSVs: {missing}. "
+            f"Got columns: {list(df.columns)}. "
+            f"Check NDVI export schema in scripts/ndvi_county_extraction.js."
+        )
     print(f"    {len(df):,} rows  ({df['year'].min()}..{df['year'].max()}, "
           f"{df['GEOID'].nunique()} GEOIDs)")
     return df
@@ -266,6 +296,20 @@ def load_hls(glob_pattern):
         raise ValueError(f"HLS forecast_date values not mappable: {unknown_fd}")
     df["forecast_date"] = df["forecast_date"].replace(HLS_FORECAST_DATE_MAP)
 
+    # Drop pull-pipeline audit/meta columns. Anything not in the allowlist is
+    # dropped — `is_forecast` (object-dtype flag) and `n_granules` (count) are
+    # the known offenders; future audit columns will be dropped automatically.
+    keys = ["state_alpha", "year", "forecast_date"]
+    present_features = [c for c in HLS_FEATURE_COLS if c in df.columns]
+    missing_features = [c for c in HLS_FEATURE_COLS if c not in df.columns]
+    if missing_features:
+        print(f"    note: HLS allowlisted feature(s) absent from input: "
+              f"{missing_features} — emitted as nothing rather than NaN.")
+    dropped_cols = [c for c in df.columns if c not in keys + HLS_FEATURE_COLS]
+    if dropped_cols:
+        print(f"    dropped non-feature columns from HLS: {dropped_cols}")
+    df = df[keys + present_features]
+
     # Final key-uniqueness check — at this point any remaining duplicate keys
     # would mean two slices disagreed on feature values, which is a real bug.
     dup_keys = df.duplicated(subset=["state_alpha", "year", "forecast_date"])
@@ -325,26 +369,36 @@ def main():
     # -- Layer 1: NASS features (per-(GEOID, year), broadcast across forecast_dates) --
     nass_feats = nass.drop(columns=["state_alpha", "county_name"], errors="ignore")
     df = skeleton.merge(nass_feats, on=["GEOID", "year"], how="left")
+    assert len(df) == len(skeleton), \
+        f"NASS merge fan-out: {len(df)} != skeleton {len(skeleton)} (duplicate keys?)"
     print(f"  + NASS features:    {len(df):,} rows")
 
     # -- Layer 2: NDVI (per-(GEOID, year), broadcast across forecast_dates) ----------
     # NDVI carries STATEFP / NAME we don't need; drop before merging to keep cols clean.
     ndvi_keep = ["GEOID", "year"] + [c for c in NDVI_FEATURE_COLS if c in ndvi.columns]
     df = df.merge(ndvi[ndvi_keep], on=["GEOID", "year"], how="left")
+    assert len(df) == len(skeleton), \
+        f"NDVI merge fan-out: {len(df)} != skeleton {len(skeleton)} (duplicate keys?)"
     print(f"  + NDVI:             {len(df):,} rows")
 
     # -- Layer 3: gSSURGO (per-GEOID, broadcast across all years and forecast_dates) -
     df = df.merge(gssurgo, on="GEOID", how="left")
+    assert len(df) == len(skeleton), \
+        f"gSSURGO merge fan-out: {len(df)} != skeleton {len(skeleton)} (duplicate keys?)"
     print(f"  + gSSURGO:          {len(df):,} rows")
 
     # -- Layer 4: weather (per-(GEOID, year, forecast_date)) -------------------------
     weather_keep = ["GEOID", "year", "forecast_date"] + WEATHER_FEATURE_COLS
     df = df.merge(weather[weather_keep], on=["GEOID", "year", "forecast_date"], how="left")
+    assert len(df) == len(skeleton), \
+        f"weather merge fan-out: {len(df)} != skeleton {len(skeleton)} (duplicate keys?)"
     print(f"  + weather:          {len(df):,} rows")
 
     # -- Layer 5: drought (per-(GEOID, year, forecast_date)) -------------------------
     drought_keep = ["GEOID", "year", "forecast_date"] + DROUGHT_FEATURE_COLS
     df = df.merge(drought[drought_keep], on=["GEOID", "year", "forecast_date"], how="left")
+    assert len(df) == len(skeleton), \
+        f"drought merge fan-out: {len(df)} != skeleton {len(skeleton)} (duplicate keys?)"
     print(f"  + drought:          {len(df):,} rows")
 
     # -- Layer 6: HLS (state-level → broadcast to GEOID) -----------------------------
@@ -359,6 +413,8 @@ def main():
             hls[["state_alpha", "year", "forecast_date"] + hls_feature_cols],
             on=["state_alpha", "year", "forecast_date"], how="left",
         )
+        assert len(df) == len(skeleton), \
+            f"HLS merge fan-out: {len(df)} != skeleton {len(skeleton)} (duplicate keys?)"
         print(f"  + HLS:              {len(df):,} rows  ({len(hls_feature_cols)} cols)")
     else:
         # No HLS file available — emit NaN columns so downstream code has stable schema.
