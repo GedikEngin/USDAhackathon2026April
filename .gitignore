@@ -1,58 +1,73 @@
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 *.egg-info/
-dist/
 build/
- 
-# Env
+dist/
+
+# ============================================================
+# Environments
+# ============================================================
 .env
 .env.*
-*.env
- 
-# Conda / venv
-env/
-venv/
 .venv/
- 
-# Data — keep folder structure, ignore contents
+venv/
+env/
 
-!data/.gitkeep
- 
-# Model weights
+# ============================================================
+# Jupyter
+# ============================================================
+.ipynb_checkpoints/
+
+# ============================================================
+# Data — regeneratable, never commit
+# ============================================================
+# Everything under data/ is regeneratable from scripts/*.py
+data/
+
+# Large derived artifacts in scripts/ — also regeneratable
+scripts/gridmet_county_daily_*.parquet
+scripts/training_master.parquet
+scripts/*.nc
+scripts/*.tif
+scripts/*.tiff
+
+# ============================================================
+# gSSURGO source databases — too large for git, downloaded separately
+# ============================================================
+**/gSSURGO_*/
+**/*.gdb/
+
+# ============================================================
+# Model weights — large binaries
+# ============================================================
 *.pt
 *.pth
 *.ckpt
 *.safetensors
-!model/.gitkeep
- 
-# Logs & outputs
-logs/
+*.bin
+
+# ============================================================
+# Inference / training outputs
+# ============================================================
+inference_outputs/
 runs/
-outputs/
 wandb/
+logs/
 *.log
- 
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
- 
-# OS
+
+# ============================================================
+# OS / IDE cruft
+# ============================================================
 .DS_Store
 Thumbs.db
- 
-# IDE
+*:Zone.Identifier
 .vscode/
 .idea/
 *.swp
-
-*:Zone.Identifier
-
-gSSURGO_CO
-gSSURGO_WI
-gSSURGO_NE
-gSSURGO_MO
-gSSURGO_IA
+*.swo
