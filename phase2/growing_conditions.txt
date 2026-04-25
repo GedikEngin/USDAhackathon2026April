@@ -1,0 +1,5 @@
+- lowest growing temperature
+- highest growing temperature
+- frost start/end dates
+- co2 concentration
+- Growing Degree Days (GDD) accumulated, base 50°F, capped at 86°F — this is probably the single most predictive temperature variable

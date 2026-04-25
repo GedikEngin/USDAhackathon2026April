@@ -1,0 +1,53 @@
+(landuse) enggd@MSI:~/dev/USDAhackathon2026April$ # Best: respects .gitignore, skips junk
+tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 3 --dirsfirst
+.
+├── agent
+│   ├── __init__.py
+│   ├── base.py
+│   ├── claude.py
+│   └── tools.py
+├── backend
+│   ├── __init__.py
+│   ├── inference.py
+│   ├── main.py
+│   └── models.py
+├── docs
+│   ├── CURRENT_STATE.md
+│   ├── DECISIONS_LOG.md
+│   ├── PHASE_PLAN.md
+│   ├── PROJECT_PLAN.md
+│   ├── README.md
+│   └── dataset_stats.md
+├── frontend
+│   ├── demos
+│   │   ├── 2523.png
+│   │   └── 3546.png
+│   ├── app.js
+│   └── index.html
+├── model
+│   └── segformer-b1-run1
+│       ├── best.pt
+│       ├── run_config.json
+│       └── train_log.csv
+├── phase2
+│   ├── growing_conditions.txt
+│   ├── information_available..txt
+│   └── information_needed.txt
+├── scripts
+│   ├── agent_repl.py
+│   ├── dataset.py
+│   ├── dataset_stats.py
+│   ├── download_loveda.sh
+│   ├── emissions.py
+│   ├── infer.py
+│   ├── smoke_agent_endpoint.sh
+│   ├── test_loader.py
+│   └── train.py
+├── HACKATHON_TODO.md
+├── preview.jpg
+├── requirements-windows.txt
+├── requirements.txt
+├── smoke_agent.py
+└── smoke_tools.py
+
+9 directories, 39 files

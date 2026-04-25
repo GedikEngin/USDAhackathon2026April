@@ -1,0 +1,5 @@
+- NDVI (Greenness map)
+- county temperature (per hour)
+- county sunrise/sunset hours
+- co2 concentration around midnight
+- 

@@ -1,0 +1,23 @@
+What we have:
+
+- Satellite images
+- Mean temperature per month heat map (CSV as well)
+- Mean percipitation per month heat map (CSV as well)
+- Tornado activity/per state/2000-2022
+- Crop (corn) planted 
+
+- Principal Crops Area Planted and Harvested – States and United States: 2023-2025
+- Corn Area Planted for All Purposes and Harvested for Grain, Yield, and Production – States and United States: 2023-2025
+- Corn for Silage Area Harvested, Yield, and Production – States and United States: 2023-2025
+- Corn for Grain Plant Population per Acre – Selected States: 2021-2025
+- nass corn yields
+- nass county yields
+- nass state yields
+
+- Water applied to corn/grain for all 5 states and their counties from 2018-2023
+- Data for Corn/Grain Yield from all 5 states and their counties, 2015-2024
+
+- Access to USDA national agriculture statistics service (can pull corn data)
+- Corn Area Planted for All Purposes and Harvested for Grain, Yield, and Production – States and United States: 2023-2025 
+
+- Gridded Soil Survey Geographic (gSSURGO) Database (Nebraska, Colorado, Iowa, Wisconsin, Missouri)
