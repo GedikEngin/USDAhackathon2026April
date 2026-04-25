@@ -222,3 +222,31 @@
 **Open questions carried forward:**
 - Whether to enrich the drought feature set after Phase B/C. Default: ship minimal, add only if signal warrants. Candidates: DSCI, season-cum drought weeks, silking-peak DSCI, trailing-4-week mean of d2plus.
 - Whether the state-level granularity hurts retrieval quality. USDM is the only state-level feature in the pipeline; if Phase B shows the analog matching is dominated by drought differences within a state, may need to drop USDM from the retrieval embedding (keep as covariate).
+
+---
+
+### Dataset exclusion — NAIP aerial imagery — 2026-04-25
+
+**Context:** The brief lists NAIP (USDA FSA aerial imagery, 0.6–1m resolution, RGB+NIR) alongside HLS, NASS, CDL, and weather as a candidate dataset. Question came up in conversation: which phase actually uses it? Answer: none. Decision is to keep it out and document the rationale here so it doesn't keep coming up.
+
+**Decided:**
+- **NAIP is excluded from all phases of v2.** No phase fits its strengths; every NAIP-adjacent need is better served by a dataset already in the pipeline.
+- **Brief alignment.** The brief lists candidate datasets, not required ones. Documenting "considered and excluded" with rationale satisfies the brief's selectivity expectation. A team that pulls every named dataset without thinking about fit is a worse signal than one that justifies its choices.
+- **Add a one-line "datasets considered but not used" note to the final write-up / presentation.** Pre-empts the question from judges/reviewers.
+
+**Rejected alternatives:**
+- **Use NAIP as Prithvi input.** Prithvi was pretrained on HLS bands at 30m. Feeding it NAIP would mean different band setup, different spectral characteristics, different ground sample distance — most of the pretraining benefit is lost. HLS is the right Prithvi input; NAIP is not.
+- **Use NAIP as a substitute for HLS in 2005–2012 (the pre-HLS years).** NAIP coverage in those years is sparse and asynchronous across states. Even if it were dense, the 2–3-year flyover cadence per state is wrong for within-season forecasting at four time points. Doesn't solve the gap.
+- **Use NAIP for corn-pixel masking instead of CDL.** CDL is purpose-built for this (USDA's own corn mask), free, annual, and aligned to the same grid as the rest of the imagery layer. NAIP would require a custom corn-segmentation pipeline before it could be used as a mask. Strictly worse.
+- **Use NAIP for field-boundary extraction.** Possible in principle, but the model targets county-year yield. Per-field boundaries don't change the aggregation. Wrong granularity for the target.
+- **Pull NAIP "just in case" something downstream wants it.** Multi-TB download for hypothetical future use. Storage and pull cost both nontrivial. Hard no.
+
+**Surprises / learnings:**
+- **NAIP's strength (sub-meter visual context) is exactly the dimension our target (county-year scalar) collapses.** Aggregating sub-meter imagery to county-year throws away ~99.99% of what makes NAIP special. Wrong tool for this problem. A different problem (per-field yield, equipment detection, field-boundary extraction) would be a much better fit.
+- **NAIP's flight cadence (every 2–3 years per state, growing-season acquisition with variable date) is fundamentally incompatible with a 4-time-point within-season forecast schedule.** Even if the spatial mismatch were solved, the temporal mismatch alone would rule it out.
+- **NAIP would have been a much more natural fit for the v1 SegFormer land-use project.** Visual segmentation at sub-meter res is exactly what NAIP is for. Worth noting if v3 or a follow-on project goes back to land-cover work.
+
+**Open questions carried forward:**
+- *(none — this decision is closed unless the project scope changes to per-field or equipment-level prediction)*
+
+---
