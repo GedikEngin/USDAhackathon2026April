@@ -103,22 +103,29 @@
 
 ---
 
-### Phase 2-pre — USDM format chosen — 2026-04-25
+### Phase 2-A.1+A.2 — NASS extension and NDVI extraction landed — 2026-04-25
+
+**Context:** Returned to the project after the queued pulls finished. Discovered the pipeline state was further along than the docs reflected: NASS pull extended to 2005–2024 successfully, NDVI export ran for 2004–2024 (one year wider than planned on the early side), `nass_features.py` written and run, US Drought Monitor raw CSV pulled. GEE script saved into `scripts/ndvi_county_extraction.js` for version control during this session.
 
 **Decided:**
-- **US Drought Monitor data acquired in Cumulative Percent Area format.** Each D-level column reports the percentage of the county at that level *or worse* (D0 = abnormally dry+, D1 = moderate+, D2 = severe+, D3 = extreme+, D4 = exceptional). Weekly granularity (USDM publishes Thursdays). 5 states, 2005–2024, county level.
-- **Categorical splits derivable post-hoc** as `cat_D{n} = cum_D{n} − cum_D{n+1}`. Cumulative is strictly more flexible — no information loss vs. picking categorical at acquisition time.
-- **Drought Severity Coverage Index (DSCI)** = sum of cumulative D0–D4 columns (range 0–500). Single scalar capturing "how bad and how widespread." Strong candidate for the analog-year retrieval embedding.
-- **As-of join rule for forecast features:** USDM week-ending dates are Thursdays. When joining to a forecast date D, use the most recent USDM Thursday strictly *before* D (not ≤). Prevents same-week leakage.
+- **NDVI script structure: per-year Export tasks, not a single combined task.** Mirrors what produced the 21 per-year CSVs already on disk. Cleaner failure mode (one bad year doesn't kill the whole run) and the per-year files merge trivially in `merge_all.py`. Locked in the version-controlled `scripts/ndvi_county_extraction.js`.
+- **NDVI is pre-scaled in the CSVs** — the GEE script applies `× 0.0001` server-side, so the NDVI columns are already floats in roughly `[-0.2, 1.0]`. Downstream code (specifically `merge_all.py` and any feature engineering) MUST NOT re-apply the scale factor. Documented in both the script header and the inventory doc.
+- **Keep all 21 NDVI years (2004–2024), do not filter early years.** The brief asks for 2005–2024; 2004 is "free" from the modified script and stays. CDL-coverage variation across years is real but Phase B retrieval is per-county, so a CO county with thin pre-2008 history just gets fewer analog candidates than an IA county — that's a feature, not a bug.
+- **CDL coverage map locked into the docs.** Empirical coverage by state and year (counted from the actual exports): IA/NE/WI full from 2004; MO full from 2006; CO full from 2008. Strong block 2008–2024. The ~30 counties always missing post-2008 are real corn-absent counties (St. Louis City, Denver, mountain counties).
+- **TIGER 2018 county polygons stay** as the spatial reduction layer. 443 counties = 5-state count. Independent cities (St. Louis 29510) come along for the ride and emit nulls — handled downstream.
+- **Drought feature engineering deferred to Phase A.5** as a small standalone script (`scripts/drought_features.py`). Raw weekly CSV is already on disk, so this is local-only work; no more pulls.
 
 **Rejected alternatives:**
-- **Population-weighted variants** (Cumulative/Categorical Population, Cumulative/Categorical Population Percent). Population-weighted drought is useful for water-management policy; corn fields don't care about people. Rejected.
-- **Categorical Percent Area** at acquisition. Equivalent information content but less flexible — would have to roll back up to cumulative for severity-ladder features. Rejected; cumulative covers both use cases.
-- **Raw area (square miles)** rather than percent. Would let county-size differences dominate the signal. Percent is comparable across counties of any size. Rejected.
-- **SPI/SPEI from PRISM as the sole drought source.** Derivable but redundant with USDM, which is the agronomic standard and is already gathered. Keep PRISM-derived indices available as a fallback feature only.
+- **Reconstruct the GEE script from memory or have the user paste it in** — Reconstruction-from-spec was chosen instead. The version-controlled script is functionally equivalent to what produced the existing CSVs (same schema, same bug fixes, same per-year structure) but is not byte-identical to the editor version. Risk is bounded because all 21 years already exported successfully; the saved script is for re-runs and 6th-state extension.
+- **Filter out 2004–2007 to avoid heterogeneous coverage** — Rejected. Per-county retrieval makes coverage-variation a non-issue, and dropping years narrows the analog pool unnecessarily.
+- **Update `merge_all.py` plan to apply NDVI scale factor at merge time** — Rejected. The CSVs are already scaled; re-applying would silently corrupt the data. Safer to lock "do not re-scale" as a documented invariant.
 
 **Surprises / learnings:**
-- USDM exports include both cumulative and categorical in separate files; cumulative was the right pick because every published agronomic drought feature (DSCI, drought-week counts, peak-during-silking) is built from cumulative. Categorical is a derived view, not a primary source.
+- **Docs were stale.** `PHASE2_CURRENT_STATE.md` claimed NASS extension and NDVI export were "to do" or "in flight" — both were complete and on disk. `nass_features.py` and the engineered features CSV existed but weren't acknowledged. Doc-drift is the failure mode in this kind of workflow; the fix is updating the current-state doc at the end of each working session, before the next chat starts.
+- **CDL coverage cliff is at 2008, not 2005.** The plan-side language ("CDL 2005 is the earliest available; corn-pixel masking works back to 2005") was technically true but misleading: CDL existed for *some* states in 2005, not all five. Iowa/Nebraska/Wisconsin had CDL all the way back; Missouri came online 2006; Colorado 2008. This is now in the inventory doc.
+- **NDVI per-year file count (443) is non-obvious.** It's the TIGER 2018 county count for the 5 states, including independent cities and corn-absent mountain counties. The "useful" count is closer to 410 in good years. Don't be alarmed by the 443 in `wc -l`.
 
 **Open questions carried forward:**
-- Exact column names in the downloaded CSV — spot-check after acquisition. Common conventions: `D0/D1/D2/D3/D4` directly, or `pct_D0/...`, or full names like `Drought_D0`. Document in `drought_features.py`.
+- Drought-feature aggregation: which D-level severities to expose (sum of D2+? all five percentages?), and the resampling rule from weekly to forecast-date as-of (last reading? trailing-N-week mean?). Decide in Phase A.5.
+- Once PRISM lands, the SPI/SPEI vs. USDM question can be settled empirically — both will be available. Default plan: keep both, let the model decide.
+- Confirm exact non-irrigated coverage in the post-extension NASS CSV. Original 2015–2024 cut had 0% on those columns; need a one-line `df.notna().mean()` to confirm whether the rate-limit fixes filled them in for 2005–2014.
