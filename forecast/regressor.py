@@ -99,14 +99,32 @@ _DROUGHT = [
     # spurious redundancy in SHAP attributions.
 ]
 
-# MODIS NDVI — full set (whole-season summary, broadcast across forecast_dates).
-_NDVI = [
-    "ndvi_peak",
-    "ndvi_gs_mean",
-    "ndvi_gs_integral",
-    "ndvi_silking_mean",
-    "ndvi_veg_mean",
-]
+# MODIS NDVI — INTENTIONALLY EXCLUDED for Phase C.
+#
+# The 5 MODIS NDVI columns (ndvi_peak, ndvi_gs_mean, ndvi_gs_integral,
+# ndvi_silking_mean, ndvi_veg_mean) are documented in the data dictionary as
+# WHOLE-SEASON SUMMARIES — the same value at all 4 forecast_dates within a
+# year, integrated over DOY 121-273 (May 1 → Sep 30). Including them as
+# regressor features creates as-of leakage at 08-01 and 09-01: the model
+# can see end-of-September NDVI when forecasting on August 1.
+#
+# Initial Phase C training (decisions log entry 2-C.1 first iteration) put
+# these in the feature set "as a trend prior" with the locked Phase 2 plan's
+# rationale. SHAP analysis on val 2023 showed ndvi_peak dominating
+# every prediction at every forecast_date (mean |SHAP| 17.4 vs 6.2 for the
+# next feature; top driver at 08-01, 09-01, 10-01, AND EOS). The model was
+# treating MODIS NDVI as the primary signal, not a soft prior — leaking
+# end-of-season information into August forecasts. Removed.
+#
+# Replacement is Phase D.1: HLS-derived RUNNING NDVI clipped to the
+# forecast_date, embedded via Prithvi. As-of-honest by construction.
+# Until D.1 lands, the regressor has no remote-sensing features. Phase B
+# analog cone retains its 2 MODIS NDVI columns in the retrieval embedding
+# because retrieval matching is less sensitive to as-of leakage than
+# point-prediction (an analog with similar end-of-season NDVI is *also* an
+# analog with similar weather, and the cone takes percentiles rather than
+# treating any single feature as the answer).
+_NDVI: list[str] = []
 
 # gSSURGO soil — full set (static per-GEOID).
 _SOIL = [

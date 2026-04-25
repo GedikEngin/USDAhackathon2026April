@@ -15,11 +15,6 @@
     "d2_pct",
     "d3_pct",
     "d4_pct",
-    "ndvi_peak",
-    "ndvi_gs_mean",
-    "ndvi_gs_integral",
-    "ndvi_silking_mean",
-    "ndvi_veg_mean",
     "nccpi3corn",
     "nccpi3all",
     "aws0_100",
@@ -46,19 +41,19 @@
     "objective": "reg:squarederror",
     "eval_metric": "rmse",
     "tree_method": "hist",
-    "max_depth": 6,
-    "learning_rate": 0.05,
-    "min_child_weight": 5,
+    "max_depth": 4,
+    "learning_rate": 0.1,
+    "min_child_weight": 1,
     "subsample": 0.9,
     "colsample_bytree": 0.9,
     "reg_lambda": 1.0,
     "seed": 42,
     "verbosity": 0
   },
-  "best_iteration": 203,
+  "best_iteration": 241,
   "train_metrics": {
-    "train_rmse": 6.448292373727083,
-    "val_rmse": 15.337038624090535
+    "train_rmse": 9.081404037600535,
+    "val_rmse": 19.23568736343305
   },
   "n_train": 5580,
   "n_val": 308

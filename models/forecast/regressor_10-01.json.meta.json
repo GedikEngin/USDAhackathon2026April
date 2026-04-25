@@ -17,11 +17,6 @@
     "d2_pct",
     "d3_pct",
     "d4_pct",
-    "ndvi_peak",
-    "ndvi_gs_mean",
-    "ndvi_gs_integral",
-    "ndvi_silking_mean",
-    "ndvi_veg_mean",
     "nccpi3corn",
     "nccpi3all",
     "aws0_100",
@@ -57,10 +52,10 @@
     "seed": 42,
     "verbosity": 0
   },
-  "best_iteration": 571,
+  "best_iteration": 342,
   "train_metrics": {
-    "train_rmse": 6.9596153060829575,
-    "val_rmse": 16.00904413095822
+    "train_rmse": 10.28221981025603,
+    "val_rmse": 19.97922036532031
   },
   "n_train": 5580,
   "n_val": 308
