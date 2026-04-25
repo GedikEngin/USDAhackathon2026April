@@ -8,7 +8,7 @@ The vision model and the emissions table are both fully measurable, auditable
 artifacts; the LLM is a *consumer* of those measurements, not a source of
 numbers. Every figure in a generated report traces to a source in the code.
 
-![Terra UI — 3546 demo tile, full loop rendered.](docs/screenshot-3546.png)
+![Terra UI — 3546 demo tile, full loop rendered.](docs/preview.jpg)
 
 *Place the screenshot of the rendered demo at `docs/screenshot-3546.png` so
 this image link resolves.*
