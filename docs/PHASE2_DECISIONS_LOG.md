@@ -309,3 +309,100 @@ The data dictionary (`PHASE2_DATA_DICTIONARY.md`) had explicitly flagged this as
 - *(none — decision is closed for Phase C; Phase D.1 will revisit remote-sensing features with the right as-of fidelity)*
 
 ---
+
+# PHASE2_DECISIONS_LOG entry to append
+
+> Append the entry below to `docs/PHASE2_DECISIONS_LOG.md` immediately after the existing "Phase 2-A.6 + A.7" entry. Do NOT edit anything above it. Decisions log is append-only.
+
+---
+
+### Phase 2-D.1.kickoff — Phase D.1 sub-phase plan locked — 2026-04-25
+
+**Context:** Opening of Phase 2-D.1 (Prithvi frozen-feature-extractor). Phases B and C shipped between this entry and the prior A.6+A.7 entry — Phase B analog cone working, Phase C XGBoost regressor passing the EOS gate at +46.7% lift vs analog-median (threshold was 15%). The Phase 2-C.1 mid-phase decision stripped all 5 MODIS NDVI columns from the regressor's feature list after SHAP showed `ndvi_peak` dominating predictions across every forecast date — leaking end-of-season information into August forecasts. The regressor now has zero remote-sensing features; D.1 is the as-of-honest replacement using HLS chips encoded by Prithvi.
+
+This entry documents the D.1 sub-phase plan locked at kickoff. The actual deliverables (download scripts, chip extraction, embedding pipeline, ablation table) are produced and signed off in subsequent D.1.a — D.1.e entries.
+
+**Decided:**
+
+- **Prithvi variant:** `terratorch_prithvi_eo_v2_300_tl` — Prithvi-EO-2.0, 300M parameters, temporal+location embeddings. Selected over 100M-TL (less capacity), 600M-TL (would not fit comfortably in 12 GB VRAM at our preferred batch size; 6× compute for ~2–3% expected lift). The TL variant takes lat/lon and acquisition date as auxiliary inputs and bakes them into the embedding — the architectural feature most aligned with our problem (HLS time series at known coordinates, varying acquisition dates).
+- **Chip granularity:** county-level. One embedding per `(GEOID, year, forecast_date)`. Non-negotiable for accuracy — state-level broadcast was the failure mode of the existing HLS slice CSVs (which are now superseded) and of USDM. Phase B's per-county retrieval and Phase C's per-county regression both consume per-county embeddings.
+- **Sequence shape:** T=3 chips per query, drawn from three phenology phases (vegetative, silking, grain-fill). At the 08-01 forecast date grain-fill hasn't started → T=2 padded with the silking chip duplicated to keep tensor shape constant across forecast dates. Single-chip (T=1) was rejected because using Prithvi-EO-2.0-TL without a temporal sequence wastes the variant's distinguishing feature; the model effectively becomes a plain ViT.
+- **Chip selection per county-scene: corn-richest 224×224 sub-window.** For each (granule, county) intersection, slide a 224×224 footprint across the windowed area and select the position with the maximum corn-pixel count under that year-matched CDL mask. Anchors the chip to where corn actually grows. Selected over centroid-centered (simpler but fails in large or heterogeneous counties when the centroid lands in non-corn rural land).
+- **Pooling:** mean across spatial patches and across T → one fixed-length vector per `(GEOID, year, forecast_date)` query. Standard frozen-feature-extractor recipe. Anything fancier (attention pool, learned CLS) starts blending into D.2 territory.
+- **Train pool: 2013–2022.** Drop pre-HLS years from D.1's training pool to make the engineered-only ablation row apples-to-apples (same row pool both arms see). Phase C-as-is bundle in `models/forecast/` is preserved untouched as a separate ablation row trained on the full 2005–2022 pool. Trade-off: if D.1 passes the gate and ships, the production model trains on 10 years instead of 18. Ack'd by user; accepted.
+- **CDL: annual masks 2013–2024 + existing 2025 mask.** 60 annual binary corn masks pulled from CropScape (D.1.a). Selected over 2025-only because corn-soybean rotation in the Midwest means a 2025 corn mask applied to 2018 HLS pulls 30–50% of its "corn" pixels from soybean fields — exactly the feature pollution Phase 2-C.1 stripped MODIS NDVI for. Annual masks add ~30 minutes of automated download and ~17 GB raw + 3 GB derived; accuracy gain is worth the cost.
+- **HLS phase windows: calendar-aligned, not phenology-DOY-aligned.** `aug1` = Jul 17 – Aug 15, `sep1` = Aug 17 – Sep 15, `oct1` = Sep 17 – Oct 15, `final` = Oct 17 – Nov 15. Matches the existing `hls_pull.py` style. Trade-off vs Phase A's phenology-DOY weather features (vegetative 152–195, silking 196–227, grain-fill 228–273): "phase_aug1" chip-window labels and "vpd_kpa_silk" weather labels mean slightly different things now; documented in the data dictionary. Selected because calendar windows align cleanly to forecast dates, which is the more important property for as-of fidelity.
+- **HLS pull architecture: pull-once, label-at-index-time, pick-at-embed-time.** Per `(state, year)`, query CMR once for the full growing season `<year>-05-01 to <year>-11-15`. Each downloaded granule produces 0..N county chips inline (D.1.c is inline inside D.1.b's loop, not a separate script invocation). Each chip is labeled with its calendar phase based on `scene_date` and stored in `chip_index.parquet`. At embedding-extraction time (D.1.d), the chip-picker selects the most-recent-cloud-free chip per phase with `scene_date < forecast_date`. Each granule downloaded exactly once regardless of how many forecast dates use it.
+- **Granule-level cloud filter: 70%.** Drop granules with CMR `eo:cloud_cover` ≥ 70% before downloading. Per-pixel Fmask masking still happens during chip extraction. Default for vegetation studies; cheap pre-cull saves bandwidth.
+- **Chip-level corn fraction filter: 5%.** Drop chips where < 5% of pixels are corn (per CDL mask, after Fmask cloud masking). Below this threshold, the embedding is encoding mostly forest/urban/non-corn signal. Document threshold; revisit only if D.1 misses the gate.
+- **Granule cap per phase window: 100.** Top 100 per (state, year, phase) sorted by ascending cloud cover. Captures essentially all granules in 2013–2014 Landsat-only era (lower cadence) and the cleanest 100 in 2015+ combined-sensor era (higher cadence). Time budget: ~24,000 granules × ~30s/granule ≈ 200 hours wall-clock across multiple sessions.
+- **Process-and-delete granule loop.** Granules download → all relevant county chips extracted → granule deleted before the next granule starts. Steady-state disk pressure < 5 GB. Resumability state-keyed on `granule_id ∈ chip_index.parquet`, not on chip count (granules that produce zero chips still mark as processed, so we don't re-download them).
+- **Embedding parquet schema (locked):** `data/v2/prithvi/embeddings_v1.parquet` keyed on `(GEOID, year, forecast_date)`. Plus 4 QC columns (`chip_age_days`, `chip_count`, `cloud_pct_max`, `corn_pixel_frac_min`) that become explicit regressor features — the model learns to discount predictions when chips are stale, sparse, cloudy, or corn-poor. Plus D Prithvi embedding columns flat (not array-typed) for XGBoost DMatrix compatibility. `model_version` baked into rows so re-extracts can never silently mix.
+- **Compute environment: WSL2 single-machine.** New conda env `forecast-d1` (Python 3.11, torch 2.10+cu130, terratorch 1.2.6). RTX 5070 Ti Laptop confirmed working at compute capability sm_120 — the cu130 stable wheel ships Blackwell kernels and `nvidia-smi` reports CUDA 13.1 driver, so we're past the bleeding-edge phase the GitHub issue tracker described. fp16 inference, batch size 4 default (drop to 2 if OOM, raise to 8 if easy). 12 GB VRAM (laptop variant, not desktop's 16 GB) is the hard ceiling on batch size headroom.
+- **Filesystem: WSL2 native ext4 at `~/dev/USDAhackathon2026April/`** — confirmed by `df -h ~` showing `/dev/sdd` 881 GB free. Steady-state D.1 footprint expected ~50–60 GB; peak transient during HLS pull ~150 GB. Comfortable.
+- **Phase C bundle preservation: read-only.** D.1 retrain writes to `models/forecast_d1/`, never overwrites `models/forecast/`. Both bundles required for the G.2 ablation table.
+- **Ablation table will be 4 rows, not the 1 row the locked plan implied.** Rows: (A) engineered-only retrained on 2013–2022 (apples-to-apples baseline; the official gate compares D.1 against this row), (B) engineered + Prithvi on 2013–2022 (D.1 candidate), (C) Phase C-as-is on 2005–2022 (existing bundle, "more data, no Prithvi" reference), (D) engineered + leaky MODIS NDVI on 2013–2022 (reference only, documents what the gate looks like with the previously-stripped feature; not a production candidate). 4 rows for 30 min of training. Insurance against reviewer questions.
+
+**Rejected alternatives:**
+
+- **Centroid-centered chip selection.** Simpler but pulls the chip onto a county centroid that may or may not be in the densest corn area. Real failure mode in Colorado mountain counties (centroid in mountains/range) and in heavy-rotation Iowa counties (centroid happens to be soy this year). Corn-richest is one extra slide pass per chip; cost is ~5% of D.1.c runtime, not material.
+- **2025-only CDL mask.** Faster (no download), but corn-soy rotation contamination is exactly the failure mode Phase 2-C.1 identified for MODIS NDVI. Wrong tool for the accuracy-first deliverable.
+- **Phenology-DOY phase windows for HLS.** Aligns to gSSURGO/weather Phase A semantics but produces awkward "silking chip dated before silking started" cases when chips are scarce in early years. Calendar-aligned wins for as-of fidelity. Doc'd the cross-source phase-label-meaning difference.
+- **Per-forecast-date temporal CMR queries (separate query per forecast date).** Conceptually clean, but means downloading the same granule up to 4 times if it falls into multiple phase windows for different forecast dates. Pull-once-label-at-index-time wins on bandwidth and simplicity.
+- **Prithvi-EO-2.0-600M-TL.** 6× compute for ~2–3% expected lift on GEO-bench. Doesn't fit comfortably in 12 GB at batch 4 / fp16 with T=3 sequences. Held as a fallback if 300M underdelivers; one-line `BACKBONE_REGISTRY.build(...)` swap.
+- **Skipping the ablation Row D ("engineered + leaky MODIS NDVI").** Saves 5 minutes of training. Loses the ability to answer the obvious reviewer question "what would the gate look like if you'd kept the leaky feature?" Cost-benefit favors keeping it.
+- **Including pre-2013 train years with Prithvi-NaN.** XGBoost handles native missing values via missing-direction splits, so technically possible. But it confounds "Prithvi adds lift" with "more data adds lift" in the gate test. Apples-to-apples pool is more defensible.
+
+**Surprises / learnings:**
+
+- **The desktop-vs-laptop 5070 Ti VRAM mismatch.** Initial planning assumed 16 GB based on the desktop card; `nvidia-smi` revealed 12 GB on the laptop variant. Doesn't change the plan but does narrow the upgrade path (600M is no longer a comfortable fallback).
+- **CUDA 13 stable PyTorch shipping ahead of expectation.** The GitHub issue threads from 2025 about Blackwell + sm_120 looked dire — nightly-only support, kernel image errors. As of torch 2.10.0 + cu130 (Apr 2026), Blackwell support is in stable. Free upgrade.
+- **`terratorch.__version__` not exposed as a module attribute.** Probe scripts need `importlib.metadata.version('terratorch')` instead. Minor footgun.
+- **CropScape returns state-clipped tiles with bbox-padded extent, not state-polygon-only.** Total pixel counts are bbox area, not state area. Corn-pixel counts are correct (pixels outside state are nodata/zero in the binary mask), so no contamination, but it explains why every CO file is 361.6 MB regardless of year — the bbox is fixed.
+- **Wisconsin's corn is mostly silage, not grain.** CDL doesn't disambiguate corn-for-silage from corn-for-grain at the pixel level — both are class 1. NASS yield target is grain-only. Phase D.1 chip embeddings will encode silage-crop signal mixed with grain-crop signal in WI. Documented limitation; not D.1-blocking.
+- **Existing `scripts/hls_pull.py` had several reusable cores** — GDAL config for cloud-native access, Fmask bit decoding, L30/S30 band-name asymmetry handling, earthaccess-based fsspec opener pattern. Lifted directly into D.1.b's `download_hls.py`. The state-level VI computation logic and the per-window 5-granule median are dropped.
+
+**Open questions carried forward:**
+
+- **Embedding dimension D is currently TBD.** Will be set on first model load (expected ~1024 for Prithvi-EO-2.0-300M). Locked into parquet schema before the long inference run.
+- **Re-investigation of the Wisconsin silage/grain disambiguation.** If Row B (engineered + Prithvi) underperforms specifically on Wisconsin in the per-state RMSE breakdown, the most likely cause is silage contamination in the WI chips. If this happens, the fix is masking against the NASS Cropland CCDS (Corn for Silage) layer, not just CDL. Out of scope unless we see the symptom.
+- **Re-running with phenology-DOY phase windows** if calendar-windows underperform. Easy ablation later — same pulled granules, different label assignment at index-build time.
+- **2014–2015 Landsat-only era spatial coverage.** Sentinel-2 (S30) coverage starts mid-2015, so 2013–2014 are L30-only and 2015 is partial. Lower revisit cadence in those years means smaller chip pool per (county, year, phase). May see the per-county chip count drop below 1 in some 2013–2014 (state, phase) cells. If so, those `(GEOID, year, forecast_date)` rows get NaN embeddings — XGBoost handles via missing-direction split, no drop. Document if it materializes.
+
+**Phase 2-D.1.kickoff closed.** Sub-phase D.1.a (CDL prep) closed concurrently — see the next entry.
+
+---
+
+### Phase 2-D.1.a — CDL annual masks pulled and built — 2026-04-25
+
+**Context:** Sub-phase D.1.a of Phase 2-D.1. Two scripts (`scripts/download_cdl.py` and `scripts/cdl_to_corn_mask.py`) executed end-to-end producing 60 raw CDL geotiffs and 60 binary corn masks for 5 states × 12 years (2013–2024). Existing 2025 mask in `phase2/cdl/` was deleted before the run for clean-slate uniformity.
+
+**Decided:**
+
+- **Output naming convention locked:** raw CDL at `phase2/cdl/raw/cdl_<state_alpha>_<year>.tif`; binary corn masks at `phase2/cdl/cdl_corn_mask_<state_alpha>_<year>.tif`. Year-suffixed naming applies to all years uniformly, including the 2025 mask (rebuilt from scratch as part of this sub-phase rather than preserved from prior state).
+- **Reprojection ordering: threshold first, reproject second.** `mask = (cdl == 1)` in source CRS, then `rasterio.warp.reproject(mask, dst_crs=EPSG:5070, resolution=30, resampling=nearest)`. Doing it the other way (reproject categorical, then threshold) requires nearest-neighbor on a 256-class raster to preserve class codes — correct but wasteful. Threshold-first means the reproj operates on a 2-class raster; nearest-neighbor preserves binary semantics with no surprises.
+- **Corn class definition:** CDL value 1 only ("Corn"). Sweet corn (class 12) and popcorn (class 13) intentionally excluded. Matches NASS yield target (corn for grain, combined practice). Documented for downstream code.
+- **Output format: uint8, single-band, LZW-compressed, tiled 256×256, EPSG:5070, 30 m.** Matches the conventions of Phase A's gSSURGO outputs and the 30 m HLS native resolution.
+- **2024 CDL native 10 m resolution handled by the resample step.** The downloaded 2024 raster is 10 m natively (USDA changed the publication resolution starting 2024). The reproject step in `cdl_to_corn_mask.py` resamples it to 30 m via nearest-neighbor during reprojection. Result is pixel-aligned with historical CDL and HLS.
+- **Raw CDL geotiffs retained on disk through Phase D.1.** ~17.6 GB at `phase2/cdl/raw/`. Cleanup pass at end of D.1 deletes them. Kept in case mask-rule iterations are needed (e.g. expanding to silage class 24 if WI chips underperform).
+
+**Rejected alternatives:**
+
+- **Reproject categorical CDL first, then threshold.** Wasteful; reproject runs on a 256-class raster. Order matters here only for performance, not correctness.
+- **Bilinear/cubic resampling.** Wrong for binary class data. Nearest-neighbor is correct.
+- **Use the existing 2025 masks as-is for the 2025 forecast year.** Decided to rebuild from scratch via the same pipeline so that all 13 (5 × 13) masks share identical conventions — eliminates risk of a subtle pre-binarization difference (e.g. were sweet corn pixels included in the original 2025 mask? unknown).
+
+**Surprises / learnings:**
+
+- **CropScape bbox-padded output:** all 60 raw geotiffs share identical pixel dimensions per state regardless of year (CO: 361.5M px; IA: 207.7M px; MO: 334.4M px; NE: 294.7M px; WI: 269.1M px). This is the state's bounding-box envelope, not the state polygon. Pixels outside the state are correctly nodata in the binary mask. Doesn't affect downstream usage; explains the consistent file sizes.
+- **Year-over-year corn-fraction drift is small but real, ±2 percentage points across 12 years for IA/NE.** Confirms the masks are tracking actual annual rotation, not stale or cached. Validates the annual-CDL decision empirically.
+- **Missouri corn fraction (3.9–5.0%) lower than initial expectation (~10%).** State-aggregate is dominated by the Ozarks and bootheel; corn is concentrated in the northern third. Real, not a bug.
+- **Colorado corn fraction (1.4–2.1%) is correct and matches state-level NASS estimates.** Most of CO is mountains/range/urban; corn is concentrated on the eastern plains.
+- **The CropScape API returns a temporary geotiff URL inside the XML response, not a direct binary stream.** Two-step fetch: GET `/GetCDLFile` for the URL, then GET that URL for the geotiff. Documented in the `download_cdl.py` source.
+
+**Open questions carried forward:**
+
+- **Wisconsin silage vs grain.** If WI per-state RMSE in Row B underperforms, the WI chips are encoding silage signal alongside grain signal. Fix would be including/excluding CDL class 24 (Corn for Silage). Out of scope unless symptom appears.
+- **Raw CDL retention through Phase D.1.** ~17.6 GB. Can be deleted early if disk pressure becomes an issue during HLS pulls; for now keeping for mask-rule iteration headroom.
+
+**Phase 2-D.1.a closed cleanly.** Ready to start D.1.b (HLS download + chip extraction).

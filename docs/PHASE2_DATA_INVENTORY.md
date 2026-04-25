@@ -2,7 +2,7 @@
 
 > Living tracker. Update whenever data status changes — pulled, parsed, cleaned, joined, validated, or discovered missing. This is the single source of truth for "do we have what we need to start the next phase."
 
-**Last updated:** 2026-04-25, end of Phase C — **PHASES A, B, C COMPLETE.** No new data acquired in Phase B or C; both phases consumed `training_master.parquet`. Open items below updated to reflect what Phase B and C resolved or deferred.
+**Last updated:** 2026-04-25, end of Phase 2-D.1.a (CDL annual masks landed).
 
 ## Status legend
 
@@ -12,7 +12,7 @@
 - 🔴 **Need** — not yet acquired
 - ⚫ **Deprioritized** — known, decided not worth the integration cost
 
-**Coverage target:** 5 states (IA, CO, WI, MO, NE), county level, **2005–2024** per the brief.
+**Coverage target:** 5 states (IA, CO, WI, MO, NE), county level, **2005–2024** per the brief. Phase D.1 narrows the model train pool to **2013–2024** because HLS only exists 2013+.
 
 ---
 
@@ -32,9 +32,9 @@
 | Target | `yield_target` (combined-practice corn-grain yield, bu/acre) |
 | Full feature coverage | 25,380 / 25,872 (98.1%) excl. HLS; 10,575 / 25,872 (40.9%) incl. HLS |
 
-**Reference doc:** `docs/PHASE2_DATA_DICTIONARY.md` — column-by-column with units, ranges, NaN patterns, formulas, phase windows, and a worked example. **This is the file Phase B/C/F engineers (and LLM agents) read.**
+**Reference doc:** `docs/PHASE2_DATA_DICTIONARY.md`. **Source script:** `scripts/merge_all.py`.
 
-**Source script:** `scripts/merge_all.py`. Outer-joins six sources (NASS / NDVI / gSSURGO / weather / drought / HLS), respects all locked schema decisions, has per-layer row-count invariants and end-of-script asserts.
+The 4 HLS columns currently in the master table (`hls_ndvi_mean`, `hls_ndvi_std`, `hls_evi_mean`, `hls_evi_std`) are state-level broadcast and 59% null. **They will be replaced in D.1's master-table rebuild** via left-join on the new `embeddings_v1.parquet` (D Prithvi embedding columns + 4 QC columns). The `merge_all.py` HLS allowlist code stays in place but starts pulling from the new source.
 
 ---
 
@@ -42,76 +42,84 @@
 
 | Dataset | Source | Use | Coverage needed | Status | Notes |
 |---|---|---|---|---|---|
-| Prithvi foundation model | NASA / IBM via HuggingFace | Geospatial feature extraction | Model weights | 🔴 Need | Download in Phase D.1. ~600M params. |
-| HLS (Harmonized Landsat-Sentinel) | NASA LP DAAC | Multispectral imagery, Prithvi input | 5 states, 2005–2024, growing season | 🟡 Partial | Provisional state-level VI features (4 cols) merged in `training_master.parquet`. **Will be redone in Phase D.1** with consistent slice schema and county-level granularity for Prithvi feature extraction. Current slices: `phase2/data/hls/hls_vi_features_*.csv` (5 files, ~260 deduped rows). 2005–2013 is Landsat-only, low cadence. |
-| NAIP aerial imagery | USDA FSA | High-res visual context | 5 states, recent years | ⚫ Excluded | Decided 2026-04-25 (see decisions log). NAIP doesn't fit any v2 phase: wrong sensor for Prithvi (HLS-pretrained), wrong cadence for in-season forecasting, wrong job for corn masking (CDL is purpose-built). Documented as "considered, excluded" in the final write-up. |
-| USDA NASS yield (CORN, GRAIN — bu/acre) | NASS QuickStats API | Ground truth | 5 states, county level, 2005–2024 | 🟢 Have | `scripts/nass_corn_5states_2005_2024.csv` (6,837 × 16). 100% combined-practice coverage. Engineered features in `nass_corn_5states_features.csv` (6,834 × 10). Merged into `training_master.parquet`. |
-| Cropland Data Layer (CDL) | NASS CropScape | Corn-pixel mask | 5 states, 2005–2024 | 🟡 Have via Earth Engine | Currently used inside the GEE NDVI script (`cropland == 1` mask). Standalone local download still needed if the HLS pipeline is built (Phase D.1) for offline masking. CDL coverage is uneven before 2008 — see "CDL coverage by state and year" below. |
-| Weather / climate (daily, gridded) | gridMET | GDD, EDD, VPD, precip accumulation, srad | 5 states, daily, 2005–2024 | 🟢 Have | `scripts/gridmet_county_daily_2005_2024.parquet` + 20 per-year parquets. Derived per-cutoff features in `scripts/weather_county_features.csv` (35,440 × 14). Merged into `training_master.parquet`. |
+| Prithvi foundation model | NASA / IBM via HuggingFace | Geospatial feature extraction | Model weights | 🔴 Need (D.1.d) | terratorch backbone string `terratorch_prithvi_eo_v2_300_tl`. ~1.2 GB weights, downloaded to `~/.cache/terratorch/` on first model load. |
+| HLS (Harmonized Landsat-Sentinel) | NASA LP DAAC | Multispectral imagery, Prithvi input | 5 states, 2013–2024, growing season May–Nov | 🔴 **Need (D.1.b — NEXT)** | Pull-once per (state, year) via earthaccess + CMR. Granule-level cloud filter 70%. Top 100 cleanest granules per phase window. Process-and-delete loop. Outputs: `data/v2/hls/chips/<GEOID>/<year>/<phase>_<scene_date>.tif` + `data/v2/hls/chip_index.parquet`. |
+| NAIP aerial imagery | USDA FSA | High-res visual context | 5 states, recent years | ⚫ Excluded | Decided 2026-04-25 (see decisions log). |
+| USDA NASS yield (CORN, GRAIN — bu/acre) | NASS QuickStats API | Ground truth | 5 states, county level, 2005–2024 | 🟢 Have | `scripts/nass_corn_5states_2005_2024.csv` (6,837 × 16); `nass_corn_5states_features.csv` (6,834 × 10). |
+| Cropland Data Layer (CDL) | NASS CropScape | Annual corn-pixel mask for HLS | 5 states, 2013–2024 | 🟢 **Have (D.1.a)** | `phase2/cdl/cdl_corn_mask_<state>_<year>.tif × 60` — uint8 binary masks at EPSG:5070 / 30 m / LZW. Built by `scripts/cdl_to_corn_mask.py` from `phase2/cdl/raw/cdl_<state>_<year>.tif × 60` (raw categorical, 17.6 GB). Year-over-year drift confirms masks track real rotation (IA 27.5–29.9%, NE 14.0–16.2%, WI 6.7–7.5%, MO 3.9–5.0%, CO 1.4–2.1%). |
+| Weather / climate (daily, gridded) | gridMET | GDD, EDD, VPD, precip accumulation, srad | 5 states, daily, 2005–2024 | 🟢 Have | `scripts/gridmet_county_daily_2005_2024.parquet`; derived features `scripts/weather_county_features.csv` (35,440 × 14). |
 
 ## Strongly recommended additions
 
 | Dataset | Source | Use | Coverage needed | Status | Notes |
 |---|---|---|---|---|---|
-| US Drought Monitor | NDMC / USDM | Drought severity feature for retrieval embedding | 5 states, weekly, 2005–2024 | 🟢 Have | `phase2/data/drought/drought_USDM-...csv` raw (6,865 weekly state-level rows). Derived per-cutoff features in `scripts/drought_county_features.csv` (27,336 × 9, 0 nulls). Merged into `training_master.parquet`. |
+| US Drought Monitor | NDMC / USDM | Drought severity feature | 5 states, weekly, 2005–2024 | 🟢 Have | `scripts/drought_county_features.csv` (27,336 × 9, 0 nulls). State-level broadcast. |
 
 ## Already on hand
 
 | Dataset | Source | Use in v2 | Status | Notes |
 |---|---|---|---|---|
-| NASS combined-practice corn yield 2005–2024 | NASS QuickStats API | Ground truth | 🟢 | `scripts/nass_corn_5states_2005_2024.csv`. Full brief range. 100% on combined-practice columns; ~7% irrigated (CO + NE only). |
-| NASS engineered features | `scripts/nass_features.py` | Engineered yield features | 🟢 | `scripts/nass_corn_5states_features.csv` (6,834 × 10). Merged into master table. |
-| MODIS NDVI mapping, 5 states | GEE / MODIS MOD13Q1 | Vegetation index features | 🟢 | 21 per-year CSVs in `phase2/data/ndvi/`. Merged into master table. **Pre-scaled (× 0.0001 server-side); do NOT re-scale.** Coverage caveat: CO 2005–2007 has 1.9% null due to CDL pre-rollout. **NDVI ≠ HLS** — NDVI is a derived index from MODIS; raw HLS for Prithvi is still partial. |
-| GEE NDVI script (version-controlled) | Local | Reproducibility | 🟢 | `scripts/ndvi_county_extraction.js`. Header documents bug fixes, output schema, how to extend or re-run. Per-year export task pattern. |
-| gSSURGO Valu1 county features, 5 states | `scripts/gssurgo_county_features.py` | Soil features | 🟢 | `scripts/gssurgo_county_features.csv` (443 × 13). Static across years. Merged into master table. |
-| gridMET daily weather, 5 states, 2005–2024 | `scripts/gridmet_pull.py` | GDD, EDD, VPD, precip, srad source | 🟢 | Raw daily parquets per year + combined parquet. Cached netcdfs in `data/v2/weather/raw/_gridmet_nc_cache/`. |
-| gridMET-derived per-cutoff features | `scripts/weather_features.py` | Climate features | 🟢 | `scripts/weather_county_features.csv` (35,440 × 14). Merged into master table. |
-| US Drought Monitor weekly raw | NDMC | Drought source | 🟢 | `phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv`. **State-level, not county-level.** Cumulative percent area (D0 ≥ D1 ≥ D2 ≥ D3 ≥ D4 by construction). |
-| USDM-derived per-cutoff features | `scripts/drought_features.py` | Drought features | 🟢 | `scripts/drought_county_features.csv` (27,336 × 9, 0 nulls). Merged into master table. State readings broadcast to all GEOIDs in state; as-of join uses `valid_end < forecast_date` (strict). |
-| TIGER 2018 county polygons | US Census | Spatial reduction layer | 🟢 | `phase2/data/tiger/tl_2018_us_county/` (full shapefile) + `phase2/data/tiger/tl_2018_us_county_5states_5070.gpkg` (5-state subset, EPSG:5070 for gSSURGO zonal stats). |
-| HLS-derived state-level VI features (provisional) | (HLS pull pipeline, separate) | Vegetation indices for the master table; redone in Phase D.1 | 🟡 | 5 slice CSVs in `phase2/data/hls/hls_vi_features_*.csv`. **Inconsistent slice schemas** (some have `is_forecast` and `n_granules`, others don't). `merge_all.py` allowlists only `ndvi_mean, ndvi_std, evi_mean, evi_std`; meta columns dropped. 59.1% null in master table (pre-2013 structural). |
+| NASS combined-practice corn yield 2005–2024 | NASS QuickStats API | Ground truth | 🟢 | Full brief range. 100% on combined-practice columns. |
+| NASS engineered features | `scripts/nass_features.py` | Engineered yield features | 🟢 | Merged into master table. |
+| MODIS NDVI mapping, 5 states | GEE / MODIS MOD13Q1 | **Phase B retrieval embedding only** — stripped from Phase C regressor at 2-C.1 (SHAP showed leakage) | 🟢 | 21 per-year CSVs in `phase2/data/ndvi/`. Pre-scaled (× 0.0001 server-side). Whole-season summary (same value at all 4 forecast dates within a year). |
+| GEE NDVI script (version-controlled) | Local | Reproducibility | 🟢 | `scripts/ndvi_county_extraction.js`. |
+| gSSURGO Valu1 county features, 5 states | `scripts/gssurgo_county_features.py` | Soil features | 🟢 | `scripts/gssurgo_county_features.csv` (443 × 13). |
+| gridMET daily weather, 5 states, 2005–2024 | `scripts/gridmet_pull.py` | Climate source | 🟢 | Raw daily parquets per year + combined parquet. |
+| gridMET-derived per-cutoff features | `scripts/weather_features.py` | Climate features | 🟢 | Merged into master table. |
+| US Drought Monitor weekly raw | NDMC | Drought source | 🟢 | State-level. |
+| USDM-derived per-cutoff features | `scripts/drought_features.py` | Drought features | 🟢 | Merged. |
+| TIGER 2018 county polygons | US Census | Spatial reduction layer | 🟢 | `phase2/data/tiger/tl_2018_us_county/` + `phase2/data/tiger/tl_2018_us_county_5states_5070.gpkg` (5-state subset, EPSG:5070). |
+| **CDL annual binary corn masks** | **CropScape via `download_cdl.py`** | **HLS chip masking (D.1.b/c)** | 🟢 **(D.1.a)** | **`phase2/cdl/cdl_corn_mask_<state>_<year>.tif × 60` for 5 states × 2013–2024. Plus the 2025 mask rebuilt via the same pipeline. EPSG:5070 / 30 m / uint8 / LZW. Pixel-aligned with HLS, gSSURGO.** |
+| **CDL raw categorical geotiffs** | **CropScape** | **Source for corn masks; retained for mask-rule iteration** | 🟢 **(D.1.a)** | **`phase2/cdl/raw/cdl_<state>_<year>.tif × 60` (~17.6 GB). Will be deleted in cleanup pass at end of D.1.** |
 | NASS state yields | NASS | State-level validation | 🟢 | |
-| Principal Crops Area Planted/Harvested 2023–2025 | NASS | Acres feature | 🟡 | Useful; need to extend back to 2005 if used. |
-| Corn Area Planted/Harvested + Yield + Production 2023–2025 | NASS | Acres feature | 🟡 | Same — extend if used. |
-| Corn for Silage Area Harvested 2023–2025 | NASS | Disambiguate grain vs silage | 🟢 | Niche but useful. |
-| Corn Plant Population per Acre 2021–2025 | NASS | Density feature | 🟢 | Limited history; recent-years feature only. |
-| Water applied to corn/grain, 5 states, county, 2018–2023 | USDA Irrigation Survey | Irrigation feature | 🟡 | Sparse temporally (every ~5 years); use as quasi-static county feature. |
+
+## Superseded / deleted in this session
+
+- **State-level HLS slice CSVs** at `phase2/data/hls/hls_vi_features*.csv` (5 files). Deleted. Superseded by D.1.b's per-county chip extraction pipeline.
+- **`scripts/hls_county_features.csv`**. Deleted. Output of the old `hls_features.py` against the now-deleted slices.
+- **`scripts/hls_pull.py`, `scripts/hls_features.py`**: kept as **read-only references** for D.1.b's `download_hls.py`. The GDAL/earthaccess auth pattern, Fmask bit decoding, and L30/S30 band-name asymmetry handling are reused. To be deleted at end of Phase D.1 cleanup.
 
 ## Not yet acquired
 
 | Dataset | Source | Use | Coverage needed | Status | Notes |
 |---|---|---|---|---|---|
-| HLS imagery (raw multispectral, county-level) | NASA LP DAAC | Prithvi input | 5 states, 2005–2024, growing season | 🔴 Need (Phase D.1) | Largest dataset by far. TB-scale. Settle storage strategy before pulling. The currently-merged `hls_vi_features_*.csv` are state-level VI summaries from a separate pipeline; not the raw cubes Prithvi needs. |
-| CDL standalone (local) | NASS CropScape | Offline corn masking for HLS pipeline | 5 states, 2005–2024 | 🔴 Need (Phase D.1) | Currently used only inside GEE; pull a local copy when HLS pipeline lands. |
-| Prithvi model weights | HuggingFace | Geospatial feature extraction | 1 model | 🔴 Need (Phase D.1) | ~600M params. |
+| HLS imagery (raw multispectral) → county chips | NASA LP DAAC + `download_hls.py` | Prithvi input | 5 states, 2013–2024, growing season | 🔴 **Need (D.1.b — NEXT)** | Pull architecture: pull-once-per-(state, year), label chips at index time, pick chips at embed time. ~24,000 granules expected; ~150 GB peak transient disk; ~50 GB persisted as 224×224×6 county chips. Multi-evening pull. |
+| Prithvi model weights | HuggingFace via terratorch | Geospatial feature extraction | 1 model | 🔴 Need (D.1.d) | `BACKBONE_REGISTRY.build("terratorch_prithvi_eo_v2_300_tl", pretrained=True)` triggers the ~1.2 GB download to `~/.cache/terratorch/`. |
 
 ## Deprioritized (with rationale)
 
-- Hourly temperature — daily Tmin/Tmax + GDD is sufficient for county-annual yield.
-- Sunrise/sunset hours — deterministic from latitude+date; modern corn hybrids photoperiod-insensitive. gridMET solar radiation covers actually-useful signal.
-- CO₂ concentration — spatially uniform across CONUS; absorbed by `year` as a feature.
-- Tornado activity — highly localized damage; near-zero signal at county-year aggregation.
-- PRISM (vs. gridMET) — picked gridMET for daily weather. PRISM remains a viable fallback if gridMET ever shows quality issues.
+- Hourly temperature — daily Tmin/Tmax + GDD is sufficient.
+- Sunrise/sunset hours — modern hybrids photoperiod-insensitive; gridMET srad covers actually-useful signal.
+- CO₂ concentration — spatially uniform across CONUS.
+- Tornado activity — highly localized, near-zero signal at county-year aggregation.
+- PRISM (vs. gridMET) — picked gridMET; PRISM remains a fallback.
 - NAIP aerial imagery — see decisions log entry 2026-04-25.
 
-## CDL coverage by state and year (NDVI corn-masking dependency)
+## CDL coverage by state and year (NDVI/HLS corn-masking dependency)
 
-The MOD13Q1 source is available 2000–present, but corn-masking depends on USDA CDL coverage, which started rolling out state-by-state in the early 2000s. Empirical coverage from the actual exports (counties with non-null `ndvi_peak`):
+The MOD13Q1 (MODIS NDVI) source is available 2000–present. The CDL corn-mask coverage was uneven 2005–2007 (relevant for Phase A.2 NDVI), but is **complete for Phase D.1's 2013–2024 window** as confirmed in D.1.a's QC table. The 2005–2007 caveat (~1.9% NDVI null rate from CO 2005–2007) is documented and present only in the MODIS NDVI columns, not in the new D.1 HLS chip pipeline.
 
-| State | FIPS | Counties (TIGER 2018) | 2004–2005 | 2006–2007 | 2008+ |
+| State | FIPS | Counties (TIGER 2018) | NDVI 2005–2007 (Phase A) | NDVI 2008+ (Phase A) | CDL corn-mask 2013–2024 (D.1.a) |
 |---|---|---|---|---|---|
-| Iowa | 19 | 99 | 99 ✅ | 99 ✅ | 99 ✅ |
-| Nebraska | 31 | 93 | 93 ✅ | 93 ✅ | 93 ✅ |
-| Wisconsin | 55 | 72 | 72 ✅ | 72 ✅ | 72 ✅ |
-| Missouri | 29 | 115 | ~28 ⚠️ | ~110 ✅ | 110–113 ✅ |
-| Colorado | 08 | 64 | ~3–4 ❌ | ~40 ⚠️ | 37–38 ✅ |
+| Iowa | 19 | 99 | 99 ✅ | 99 ✅ | ✅ all 12 years |
+| Nebraska | 31 | 93 | 93 ✅ | 93 ✅ | ✅ all 12 years |
+| Wisconsin | 55 | 72 | 72 ✅ | 72 ✅ | ✅ all 12 years |
+| Missouri | 29 | 115 | ~28–110 ⚠️ | 110–113 ✅ | ✅ all 12 years |
+| Colorado | 08 | 64 | ~3–40 ❌ | 37–38 ✅ | ✅ all 12 years |
 
-**Implications confirmed in master table:**
-- Brief specifies 2005–2024 — fully usable for IA/NE/WI all years; MO from 2006; CO from 2008.
-- **Strong block: 2008–2024** (~17 years × ~410 counties).
-- 2005–2007 is usable but heterogeneous; CO essentially no NDVI 2005–2007 (visible as the 1.9% NDVI null rate in `training_master.parquet`).
-- The ~30 counties always missing post-2008 are corn-absent counties (St. Louis City, Denver, CO mountain counties, urban WI). They drop out of training because they have no NASS yield either — explains why master table has 388 GEOIDs vs. 443 TIGER counties.
-- **Phase B retrieval is per-county**, so coverage variation across states does not contaminate analog matching.
+**Phase B retrieval is per-county** and **Phase D.1 chip extraction is per-county**, so coverage variation across states does not contaminate analog matching or chip embedding.
+
+## Phase D.1 outputs (planned)
+
+| File | Sub-phase | Status |
+|---|---|---|
+| `phase2/cdl/raw/cdl_<state>_<year>.tif × 60` | D.1.a | ✅ Built |
+| `phase2/cdl/cdl_corn_mask_<state>_<year>.tif × 60` | D.1.a | ✅ Built |
+| `data/v2/hls/chips/<GEOID>/<year>/<phase>_<scene_date>.tif` | D.1.b/c | 🔴 Need |
+| `data/v2/hls/chip_index.parquet` | D.1.b/c | 🔴 Need |
+| `data/v2/prithvi/embeddings_v1.parquet` | D.1.d | 🔴 Need |
+| `models/forecast_d1/regressor_<date>.json × 4` | D.1.e | 🔴 Need |
+| `runs/d1_ablation_<timestamp>.csv` | D.1.e | 🔴 Need |
 
 ## Data schema (locked, all sources)
 
@@ -121,45 +129,44 @@ The MOD13Q1 source is available 2000–present, but corn-masking depends on USDA
 - **Yield units:** `bu/acre`.
 - **Area units:** acres.
 - **All tabular outputs:** parquet (snappy) or CSV. Rasters: GeoTIFF / COG.
-- **As-of rule:** features for forecast date `D` in year `Y` use only data with timestamps strictly before `D`. Enforced in feature-construction layer (`weather_features.py`, `drought_features.py`); MODIS NDVI and NASS-aux are documented exceptions (see `PHASE2_DATA_DICTIONARY.md`).
+- **As-of rule:** features for forecast date `D` in year `Y` use only data with timestamps strictly before `D`. Enforced in feature-construction layer (`weather_features.py`, `drought_features.py`, D.1.d's chip-picker via `scene_date < forecast_date`).
 
 ## Storage plan
 
-- Tabular: `scripts/*.csv` and `scripts/*.parquet` for derived/feature outputs; `phase2/data/<source>/` for raw multi-file pulls; `data/v2/weather/raw/` for the gridMET parquet cache.
-- HLS imagery (when pulled in D.1): `data/v2/hls/{state}/{year}/`.
-- CDL standalone (when pulled): `data/v2/cdl/{state}/{year}.tif`.
-- Master table: `scripts/training_master.parquet` ✅
-- gSSURGO aggregated: `scripts/gssurgo_county_features.csv` ✅
+- Tabular: `scripts/*.csv`, `scripts/*.parquet` for derived/feature outputs; `phase2/data/<source>/` for raw multi-file pulls; `data/v2/<source>/raw/` for raw caches.
+- HLS county chips (D.1.b): `data/v2/hls/chips/<GEOID>/<year>/<phase>_<scene_date>.tif`. Granule cache `data/v2/hls/raw/` rolling-deleted.
+- CDL: `phase2/cdl/raw/` (raw categorical, ~17.6 GB; deleted at end of D.1) + `phase2/cdl/` (binary masks, ~3 GB; retained).
 - gridMET raw: `data/v2/weather/raw/` ✅; derived: `scripts/weather_county_features.csv` ✅
 - USDM raw: `phase2/data/drought/` ✅; derived: `scripts/drought_county_features.csv` ✅
+- Prithvi embeddings (D.1.d): `data/v2/prithvi/embeddings_v1.parquet`.
+- Master table: `scripts/training_master.parquet` ✅. Rebuilt at end of D.1 to incorporate Prithvi embeddings via left-join.
 
 ## Open data questions
 
-- **HLS slice cleanup deferred to Phase D.1** — current 5 slice CSVs have inconsistent schemas; will be redone with proper county-level pulls when Prithvi work starts.
-- **MODIS NDVI as-of fidelity is weak.** Same value at all 4 forecast dates within a year. **RESOLVED for Phase C (2026-04-25):** SHAP analysis on the first trained Phase C bundle confirmed the regressor was treating MODIS NDVI as a hard answer rather than a soft prior — `ndvi_peak` dominated SHAP at every forecast date including 08-01. All 5 MODIS NDVI columns dropped from `forecast/regressor.py::_NDVI` (now `[]`); see `PHASE2_DECISIONS_LOG.md` Phase 2-C.1 entry. **Phase B retrieval embedding still uses MODIS NDVI** (2 columns: `ndvi_peak`, `ndvi_gs_mean`) — retrieval matching is less sensitive to as-of leakage than point prediction, and Phase B's cone is calibrated to 80% coverage with NDVI in the embedding. Replacement for the regressor will be Phase D.1's HLS-derived running NDVI clipped to forecast_date.
-- **NASS-aux fields (`acres_*`, `irrigated_share`, `harvest_ratio`) are post-hoc reported.** Same value across all 4 forecast dates. Treat as structural priors. **Phase C SHAP analysis (2026-04-25):** `acres_planted_all` is the #2 driver by mean |SHAP| (8.6 bu/acre, after `year` at 13.4); `harvest_ratio` is #3 (4.3); `irrigated_share` is #6 (0.5 mean signed). The dominance is at every forecast_date including 08-01, which is suspicious per the original flag — but in practice these values are reasonably stable year-over-year for a given county and the model is using them as county-typing priors rather than in-season measurements. Acceptable for Phase C; revisit with prior-year-lagged variants if Phase D.1 ablations show the dependence is harmful.
-- **Within-state spatial heterogeneity is lost for HLS and USDM** (both broadcast from state level). Acceptable for v2 baseline.
-- **County coverage filter:** **RESOLVED:** `n_min_history=10` qualifying training years per GEOID for analog candidacy (in `forecast/data.py::train_pool`). Used by Phase B retrieval and Phase C training. 345 of 388 GEOIDs kept; 43 dropped. Counties below threshold can still be QUERIED (forecast for them) but never appear AS analogs. Revisit only if Phase D.1 finds a counterexample.
-- **Drought feature enrichment.** **RESOLVED (default ship was sufficient through Phase C):** Phase C SHAP shows `d2_pct` in top-10 mean signed SHAP (−0.85 — drought reduces predicted yield, as expected); `d0_pct` similar (−0.87). Minimal D0–D4 set proved adequate. Candidates if Phase D.1+ wants richer signal stay on the shelf: DSCI, season-cum drought weeks, silking-peak DSCI, trailing-4-week mean of d2plus.
+- **Wisconsin silage vs grain.** CDL doesn't disambiguate corn-for-silage from corn-for-grain at the pixel level (both are class 1). NASS yield target is grain-only. Phase D.1 chip embeddings will encode silage signal mixed with grain signal in WI. Documented; revisit only if WI per-state RMSE underperforms in the D.1.e ablation.
+- **MODIS NDVI as-of fidelity is weak.** Same value at all 4 forecast dates within a year. Stripped from Phase C regressor (2-C.1); retained in Phase B retrieval embedding (less leakage-sensitive there). Will not appear in Phase D.1's HLS pipeline at all — replaced by phase-windowed chips with strict as-of fidelity.
+- **NASS-aux fields are post-hoc reported.** Same value across all 4 forecast dates. Treat as structural priors. Switch to lagged variants if D.1 ablations expose dependence.
+- **Within-state spatial heterogeneity is lost for USDM** (state-level broadcast). Acceptable for v2 baseline.
+- **Pre-2013 train years** absent from D.1's pool by construction (HLS doesn't exist). Phase C-as-is bundle (2005–2022 train) is the fallback if D.1 fails the gate.
+- **2013–2014 Landsat-only era cadence is lower** than 2015+. May see per-county chip count drop below 1 in some 2013–2014 (state, phase) cells. If so, those `(GEOID, year, forecast_date)` rows get NaN embeddings — XGBoost handles via missing-direction split.
 
 ## Decisions resolved since last inventory update
 
-- ✅ **`merge_all.py` ships with min-year filter, HLS feature allowlist, NDVI schema-drift guard, per-layer row-count asserts.** Phase A.6.
-- ✅ **`PHASE2_DATA_DICTIONARY.md` written as a comprehensive reference doc** (quick-facts table, source-grouped sections with units/ranges/formulas/phase windows, NaN-patterns triage table, as-of fidelity reference, worked example). Phase A.7.
-- ✅ **NAIP excluded from all v2 phases.** See decisions log 2026-04-25.
-- ✅ **Phase B analog-cone baseline shipped** with `same_geoid` pool, K=5, percentiles (10, 50, 90), per-county trend with state-median fallback, per-(state, forecast_date) recalibration fit on val 2023. Gate passed post-recal on 2024 holdout.
-- ✅ **Phase C XGBoost regressor shipped.** Bundle in `models/forecast/regressor_*.json`. Gate passed on val 2023 EOS at +46.7% lift (threshold 15%). `forecast/regressor.py` + `forecast/explain.py` modules; `scripts/train_regressor.py` + `scripts/backtest_phase_c.py` drivers.
-- ✅ **MODIS NDVI dropped from regressor feature set after Phase 2-C.1 SHAP-driven leakage discovery.** Phase B retrieval embedding unaffected. Replacement is Phase D.1.
-- ✅ **Recalibration is dropped for Phase C.** Val-2023-fitted constants would help val and hurt 2024 holdout (sign flips between years on CO/MO/WI).
+- ✅ **D.1 sub-phase plan locked** — Prithvi-EO-2.0-300M-TL, county granularity, T=3 sequence, corn-richest sub-window, calendar phase windows, pull-once architecture, 70% granule cloud filter, 5% chip corn-fraction filter, 100 granule cap, 2013–2022 train pool, 4-row ablation. See decisions log entry 2-D.1.kickoff.
+- ✅ **CDL annual masks built** — 60 binary corn masks for 5 states × 2013–2024 in `phase2/cdl/`. See decisions log entry 2-D.1.a.
 
-## Phase A definition-of-done — MET
+## Phase A definition-of-done — MET ✅
 
-- [x] Every dataset listed above is on disk, parsed, and joinable on `(GEOID, year)` or `(GEOID, year, forecast_date)`.
-- [x] `training_master.parquet` builds end-to-end without errors.
-- [x] `merge_all.py` asserts pass (key uniqueness, GEOID padding, valid forecast_date, per-layer row-count invariants).
-- [x] Every NaN cell in the master table has a documented cause (structural / sparse-coverage / disclosure suppression).
-- [x] `PHASE2_DATA_DICTIONARY.md` written and exhaustive.
+(Unchanged from prior inventory.)
+
+## Phase D.1 sub-phase tracking
+
+- [x] D.1.a — CDL annual masks pulled and built
+- [ ] D.1.b — **HLS download orchestration (NEXT)**
+- [ ] D.1.c — Chip extraction (inline with D.1.b)
+- [ ] D.1.d — Prithvi inference + embeddings parquet
+- [ ] D.1.e — Regressor retrain + 4-row ablation table → gate decision
 
 ## Budget note
 
-v1 used ~$0.25 of the $10 API cap. v2 token usage will be similar in shape (Haiku narration, ~$0.02 per forecast). Compute cost for HLS download + Prithvi inference is local (Ubuntu box) and outside the API budget.
+v1 used ~$0.25 of the $10 API cap. v2 token usage will be similar in shape. Compute cost for HLS download + Prithvi inference is local and outside the API budget.

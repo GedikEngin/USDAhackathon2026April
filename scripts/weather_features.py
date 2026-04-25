@@ -1,223 +1,387 @@
 """
-Build per-(GEOID, year, forecast_date) US Drought Monitor features from the
-weekly USDM CSV.
+scripts/weather_features.py — build per-(GEOID, year, forecast_date) corn-yield
+weather features from the gridMET county-day parquet.
 
 Forecast dates: "08-01", "09-01", "10-01", "EOS"  (EOS = 11-30 = Nov 30)
 
-Features (all measured AS-OF the last USDM reading strictly before the
-forecast date):
-  d0_pct          % of state at D0 or worse  (abnormally dry)
-  d1_pct          % of state at D1 or worse  (moderate)
-  d2_pct          % of state at D2 or worse  (severe)
-  d3_pct          % of state at D3 or worse  (extreme)
-  d4_pct          % of state at D4           (exceptional)
-  d2plus          alias for d2_pct (severe-or-worse), exposed as a named
-                  composite for downstream convenience
+Features (all derived from May 1 -> cutoff_date_for_year, inclusive of May 1):
 
-Note: USDM's Cumulative Percent Area columns are already nested
-(D0 >= D1 >= D2 >= D3 >= D4), so "D2+" is exactly the published D2 column.
-We expose it under both names so the modeling code can refer to a clearly-
-named drought-stress signal without having to remember the cumulative
-convention.
+  gdd_cum_f50_c86       Cumulative growing degree days, base 50F cap 86F.
+                        Both tmin and tmax clamped to [50, 86] before averaging
+                        (McMaster & Wilhelm / NDAWN / Iowa State Extension
+                        convention -- NOT the raw `(tavg - 50)` variant).
+  edd_hours_gt86f       Sinusoidal-interpolated degree-hours above 86F. Heat
+                        stress, computed via single-sine integral over each
+                        daily arc (Allen 1976 / Baskerville-Emin 1969).
+  edd_hours_gt90f       Same construction, threshold 90F.
+  vpd_kpa_veg           Mean daily VPD over vegetative window (DOY 152-195),
+                        clipped to cutoff_doy.
+  vpd_kpa_silk          Mean daily VPD over silking window (DOY 196-227),
+                        clipped to cutoff_doy.
+  vpd_kpa_grain         Mean daily VPD over grain-fill window (DOY 228-273),
+                        clipped to cutoff_doy. NaN at 08-01 (cutoff DOY 213
+                        precedes window start at 228); populated at 09-01+.
+  prcp_cum_mm           Cumulative precipitation, May 1 -> cutoff (inclusive).
+  dry_spell_max_days    Longest run of consecutive days with prcp < 2 mm/day,
+                        May 1 -> cutoff.
+  srad_total_veg        Sum daily srad (MJ/m^2) over vegetative phase, clipped.
+  srad_total_silk       Sum daily srad over silking, clipped.
+  srad_total_grain      Sum daily srad over grain fill, clipped. NaN at 08-01;
+                        populated at 09-01+.
 
-USDM is published WEEKLY at the state level (StateAbbreviation only; no
-county FIPS in the source). To produce a per-(GEOID, year, forecast_date)
-table we broadcast each state's reading to every GEOID in that state. The
-GEOID directory is sourced from nass_corn_5states_features.csv (which
-already has GEOID + state_alpha + year for the modeling universe).
+AS-OF RULE: build_features_for_cutoff(df, year, cutoff_date) slices the daily
+df ONCE at the top by `date <= cutoff_date`. Nothing downstream can see
+post-cutoff data. Phase-window slices are additionally clipped to cutoff_doy
+so e.g. on 08-01 the silking aggregate only includes DOYs <= 213, not the
+full silking window.
 
-AS-OF RULE: for forecast date D in year Y, use the USDM row whose ValidEnd
-is the maximum date strictly less than D. "Strictly before" (not <=)
-prevents same-week leakage: USDM reports validity as a Tue->Mon span
-(historically) or similar week window, and the map for week W can include
-information from days that bracket the forecast date.
+Cutoff convention: data with timestamp <= cutoff is allowed (inclusive). The
+"strictly before forecast_date" wording in the project spec is implemented
+by treating the cutoff date itself as the morning-of (the day before the
+forecast_date is the last "observable" day). Concretely, August 1 forecast =
+data through July 31 inclusive, which is `cutoff_date = July 31`. We store
+cutoffs as the forecast_date day itself with `<` semantics; for simplicity
+the implementation uses `<= (cutoff_date - 1)` -- equivalent.
 
 Usage:
-  python drought_features.py
-  python drought_features.py --in phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv \
-                             --geoid-source scripts/nass_corn_5states_features.csv \
-                             --out scripts/drought_county_features.csv
+  python scripts/weather_features.py
+  python scripts/weather_features.py --in scripts/gridmet_county_daily_2005_2025.parquet
+  python scripts/weather_features.py --in <parquet> --out <csv>
 """
+
+from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 
 import numpy as np
 import pandas as pd
 
-# --- Config ----------------------------------------------------
 
-DEFAULT_IN           = "phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv"
-DEFAULT_GEOID_SOURCE = "scripts/nass_corn_5states_features.csv"
-DEFAULT_OUT          = "scripts/drought_county_features.csv"
+# --- Config ----------------------------------------------------------------
 
-# Forecast-date suffixes (strings) -> (month, day). Match weather_features.py
-# exactly so the merge_all join keys line up.
+DEFAULT_IN  = "scripts/gridmet_county_daily_2005_2025.parquet"
+DEFAULT_OUT = "scripts/weather_county_features.csv"
+
+# Forecast date -> (month, day) of the *forecast issuance*. Data through the
+# previous day (inclusive) is allowed. EOS is 11-30 (post-harvest reconciliation).
 FORECAST_DATES = {
-    "08-01": (8,  1),
-    "09-01": (9,  1),
+    "08-01": (8, 1),
+    "09-01": (9, 1),
     "10-01": (10, 1),
     "EOS":   (11, 30),
 }
 
-# USDM D-level columns in source order (cumulative pct of area).
-DLEVEL_COLS = ["D0", "D1", "D2", "D3", "D4"]
+# Corn phenology windows by day-of-year (Corn Belt convention).
+PHASE_VEG  = (152, 195)   # vegetative
+PHASE_SILK = (196, 227)   # silking
+PHASE_GRAIN = (228, 273)  # grain fill
 
-# Output column names (lowercased + suffix; matches the rest of the v2 schema)
-OUT_COLS = {
-    "D0": "d0_pct",
-    "D1": "d1_pct",
-    "D2": "d2_pct",
-    "D3": "d3_pct",
-    "D4": "d4_pct",
-}
+# GDD bounds, Fahrenheit.
+GDD_BASE_F = 50.0
+GDD_CAP_F  = 86.0
+
+# Heat-stress thresholds, Fahrenheit.
+EDD_THRESH_86F = 86.0
+EDD_THRESH_90F = 90.0
+
+# Dry-day cutoff for dry-spell run computation.
+DRY_DAY_MM = 2.0
+
+# Season window for cumulative aggregations (DOY May 1 = 121 in non-leap years;
+# for leap years the day-of-year shift means May 1 is DOY 122. Pandas
+# `.dt.dayofyear` already accounts for leap year, so May 1 == DOY 122 in
+# leap years and DOY 121 otherwise. We use the calendar-date (May 1) to
+# slice, not a fixed DOY, to be leap-year safe).
+SEASON_START_MONTH = 5
+SEASON_START_DAY = 1
 
 
-# --- As-of join ------------------------------------------------
+# --- Conversion helpers ----------------------------------------------------
 
-def asof_state_reading(df_state, cutoff_date):
+def c_to_f(t_c: pd.Series) -> pd.Series:
+    return t_c * 9.0 / 5.0 + 32.0
+
+
+# --- GDD F50/F86 (capped) --------------------------------------------------
+
+def gdd_daily_capped(tmin_c: pd.Series, tmax_c: pd.Series) -> pd.Series:
+    """Per-day GDD, base 50F cap 86F. Both endpoints clamped to [50, 86]
+    BEFORE averaging (McMaster & Wilhelm / NDAWN convention).
+
+    Returns a Series of per-day GDD values >= 0.
     """
-    df_state: DataFrame for a single StateAbbreviation, sorted by ValidEnd ascending,
-              with ValidEnd as datetime.date in a column named 'valid_end' and the
-              D0..D4 percentage columns alongside.
-    cutoff_date: datetime.date, the forecast date.
+    tmin_f = c_to_f(tmin_c).clip(GDD_BASE_F, GDD_CAP_F)
+    tmax_f = c_to_f(tmax_c).clip(GDD_BASE_F, GDD_CAP_F)
+    gdd = (tmin_f + tmax_f) / 2.0 - GDD_BASE_F
+    return gdd.clip(lower=0.0)
 
-    Returns a 1-row Series of D0..D4 for the most recent reading whose
-    valid_end is STRICTLY BEFORE cutoff_date. None if no such row exists.
+
+# --- EDD (degree-hours above threshold via single-sine integral) -----------
+#
+# Single-sine model: temperature is approximated as a half-sine arc between
+# tmin (sunrise) and tmax (solar noon), repeated symmetrically afternoon
+# tmin -> tmax -> tmin (next sunrise). The closed-form integral of the
+# excess area above threshold T in degrees-hours per day:
+#
+#   if tmax <= T:        0
+#   elif tmin >= T:      24 * ((tmin + tmax)/2 - T)
+#   else (T crossed):    24/pi * [ (mean - T)*(pi/2 - theta) + amplitude*cos(theta) ]
+#       where mean      = (tmin + tmax)/2
+#             amplitude = (tmax - tmin)/2
+#             theta     = arcsin( (T - mean)/amplitude )
+
+def degree_hours_above_threshold(
+    tmin_c: pd.Series,
+    tmax_c: pd.Series,
+    threshold_f: float,
+) -> pd.Series:
+    """Daily degree-hours above `threshold_f` Fahrenheit. Vectorized.
+
+    Returns a Series of per-day degree-hours (>= 0).
     """
-    mask = df_state["valid_end"] < cutoff_date
-    if not mask.any():
-        return None
-    # df_state is pre-sorted ascending by valid_end, so the last True is the
-    # closest-but-strictly-before reading.
-    return df_state.loc[mask, DLEVEL_COLS].iloc[-1]
+    # Convert all to Fahrenheit; the model is unit-agnostic but we want the
+    # integration to be in F-degree-hours.
+    tmin_f = c_to_f(tmin_c).to_numpy(dtype=np.float64)
+    tmax_f = c_to_f(tmax_c).to_numpy(dtype=np.float64)
+    T = float(threshold_f)
+
+    n = len(tmin_f)
+    out = np.zeros(n, dtype=np.float64)
+
+    # Case 1: entire day below threshold -> 0 (already)
+    # Case 2: entire day above threshold
+    case2 = tmin_f >= T
+    out[case2] = 24.0 * ((tmin_f[case2] + tmax_f[case2]) / 2.0 - T)
+
+    # Case 3: threshold crossed (tmin < T < tmax)
+    case3 = (~case2) & (tmax_f > T)
+    if case3.any():
+        tmn = tmin_f[case3]
+        tmx = tmax_f[case3]
+        mean = (tmn + tmx) / 2.0
+        amp  = (tmx - tmn) / 2.0
+        # Numerical guard: if amp is tiny (< 1e-9), just set 0; otherwise
+        # arcsin can blow up.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = (T - mean) / amp
+            ratio = np.clip(ratio, -1.0, 1.0)
+            theta = np.arcsin(ratio)
+        # Integrand: 24/pi * [ (mean - T)*(pi/2 - theta) + amp*cos(theta) ]
+        dh = (24.0 / np.pi) * (
+            (mean - T) * (np.pi / 2.0 - theta) + amp * np.cos(theta)
+        )
+        # Floor at 0 against any tiny negative numerical noise
+        dh = np.maximum(dh, 0.0)
+        out[case3] = dh
+
+    return pd.Series(out, index=tmin_c.index)
 
 
-# --- Main feature builder --------------------------------------
+# --- Dry-spell run --------------------------------------------------------
 
-def build_features_for_cutoff(df_state, year, cutoff_date):
+def longest_dry_run(prcp_mm: pd.Series, threshold_mm: float = DRY_DAY_MM) -> int:
+    """Longest consecutive run of days with prcp < threshold_mm."""
+    arr = prcp_mm.to_numpy(dtype=np.float64)
+    if len(arr) == 0:
+        return 0
+    dry = (arr < threshold_mm).astype(np.int8)
+    # Standard run-length max via cumsum-with-reset trick.
+    max_run = 0
+    cur = 0
+    for v in dry:
+        if v:
+            cur += 1
+            if cur > max_run:
+                max_run = cur
+        else:
+            cur = 0
+    return int(max_run)
+
+
+# --- Phase-window slice (cutoff-clipped) ----------------------------------
+
+def phase_slice(season_df: pd.DataFrame, doy_lo: int, doy_hi: int,
+                cutoff_doy: int) -> pd.DataFrame:
+    """Return rows of `season_df` whose `doy` is in [doy_lo, min(doy_hi, cutoff_doy)].
+
+    `season_df` must have a `doy` column.
     """
-    df_state: DataFrame for a single state, ALL years, sorted ascending by valid_end.
-    year: int, the target year (used for the output row only; the as-of slice
-          is purely time-based and may pull a reading from year-1 if no
-          in-year reading precedes the forecast date - rare but possible
-          for the 08-01 cutoff if the data is sparse near the start).
-    cutoff_date: datetime.date, the forecast date.
+    hi = min(doy_hi, cutoff_doy)
+    if hi < doy_lo:
+        return season_df.iloc[0:0]
+    return season_df[(season_df["doy"] >= doy_lo) & (season_df["doy"] <= hi)]
 
-    Returns a dict of feature values for this (state, year, cutoff_date).
-    AS-OF SAFETY: asof_state_reading() applies the strictly-before filter on
-    valid_end. Nothing else in this function reads df_state.
+
+# --- Per-(county, year, cutoff) feature builder ---------------------------
+
+def build_features_for_cutoff(
+    df_county: pd.DataFrame,
+    year: int,
+    cutoff_date: dt.date,
+) -> dict:
+    """Build feature dict for one (county, year, cutoff_date).
+
+    df_county must have all years for the GEOID (will be filtered here).
+    Columns required: date, tmin_c, tmax_c, prcp_mm, srad_mjm2, vpd_kpa.
+
+    The single point of leakage control is the `mask = (date <= cutoff)`
+    line below. Nothing downstream looks past `cutoff_date`.
     """
-    row = asof_state_reading(df_state, cutoff_date)
-    if row is None:
-        return None
+    # Coerce date to pandas Timestamp for safe comparison. Both object-dtype
+    # (from python date) and datetime64 work after conversion.
+    date_series = pd.to_datetime(df_county["date"])
+    season_start = pd.Timestamp(year, SEASON_START_MONTH, SEASON_START_DAY)
+    cutoff_ts = pd.Timestamp(cutoff_date) - pd.Timedelta(days=1)
+    # cutoff_ts = the last observable day (data with timestamp == forecast_date
+    # itself is excluded; "strictly before forecast_date" semantics).
 
-    feat = {OUT_COLS[c]: float(row[c]) for c in DLEVEL_COLS}
-    # d2plus composite: USDM D-levels are cumulative, so "D2 or worse" is
-    # already exactly the D2 percentage. Expose it under a stable, descriptive
-    # name so downstream code doesn't have to know about the cumulative
-    # convention.
-    feat["d2plus"] = feat["d2_pct"]
-    return feat
+    mask = (date_series.dt.year == year) & (date_series >= season_start) & (date_series <= cutoff_ts)
+    season = df_county.loc[mask].copy()
+    if len(season) == 0:
+        # Could happen for cutoffs before May 1 (we never set such cutoffs)
+        # or for years with no daily data.
+        return {
+            "gdd_cum_f50_c86":   np.nan,
+            "edd_hours_gt86f":   np.nan,
+            "edd_hours_gt90f":   np.nan,
+            "vpd_kpa_veg":       np.nan,
+            "vpd_kpa_silk":      np.nan,
+            "vpd_kpa_grain":     np.nan,
+            "prcp_cum_mm":       np.nan,
+            "dry_spell_max_days": np.nan,
+            "srad_total_veg":    np.nan,
+            "srad_total_silk":   np.nan,
+            "srad_total_grain":  np.nan,
+        }
+
+    # Add doy.
+    season = season.assign(doy=pd.to_datetime(season["date"]).dt.dayofyear)
+    cutoff_doy = (cutoff_ts.date() - dt.date(year, 1, 1)).days + 1
+
+    # --- Cumulative aggregates (May 1 -> cutoff) --------------------------
+    gdd_d = gdd_daily_capped(season["tmin_c"], season["tmax_c"])
+    gdd_cum = float(gdd_d.sum())
+
+    dh86 = degree_hours_above_threshold(season["tmin_c"], season["tmax_c"], EDD_THRESH_86F)
+    dh90 = degree_hours_above_threshold(season["tmin_c"], season["tmax_c"], EDD_THRESH_90F)
+    edd86_cum = float(dh86.sum())
+    edd90_cum = float(dh90.sum())
+
+    prcp_cum = float(season["prcp_mm"].sum())
+    dry_spell = longest_dry_run(season["prcp_mm"])
+
+    # --- Phase-window aggregates (clipped to cutoff_doy) ------------------
+    veg = phase_slice(season, *PHASE_VEG, cutoff_doy)
+    silk = phase_slice(season, *PHASE_SILK, cutoff_doy)
+    grain = phase_slice(season, *PHASE_GRAIN, cutoff_doy)
+
+    def _mean(s):
+        return float(s.mean()) if len(s) else np.nan
+
+    def _sum(s):
+        return float(s.sum()) if len(s) else np.nan
+
+    return {
+        "gdd_cum_f50_c86":     gdd_cum,
+        "edd_hours_gt86f":     edd86_cum,
+        "edd_hours_gt90f":     edd90_cum,
+        "vpd_kpa_veg":         _mean(veg["vpd_kpa"]),
+        "vpd_kpa_silk":        _mean(silk["vpd_kpa"]),
+        "vpd_kpa_grain":       _mean(grain["vpd_kpa"]),
+        "prcp_cum_mm":         prcp_cum,
+        "dry_spell_max_days":  float(dry_spell),
+        "srad_total_veg":      _sum(veg["srad_mjm2"]),
+        "srad_total_silk":     _sum(silk["srad_mjm2"]),
+        "srad_total_grain":    _sum(grain["srad_mjm2"]),
+    }
 
 
-# --- Main ------------------------------------------------------
+# --- Main ------------------------------------------------------------------
 
-ap = argparse.ArgumentParser()
-ap.add_argument("--in",  dest="in_path",  default=DEFAULT_IN)
-ap.add_argument("--geoid-source", dest="geoid_source", default=DEFAULT_GEOID_SOURCE,
-                help="CSV with GEOID + state_alpha + year columns; defines the "
-                     "modeling universe to broadcast state-level USDM readings across.")
-ap.add_argument("--out", dest="out_path", default=DEFAULT_OUT)
-args = ap.parse_args()
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--in", dest="in_path", default=DEFAULT_IN,
+                    help=f"gridMET county-day parquet (default: {DEFAULT_IN})")
+    ap.add_argument("--out", default=DEFAULT_OUT,
+                    help=f"Output CSV (default: {DEFAULT_OUT})")
+    args = ap.parse_args()
 
-print(f"Reading USDM CSV {args.in_path}...")
-usdm = pd.read_csv(args.in_path)
-usdm["valid_end"] = pd.to_datetime(usdm["ValidEnd"]).dt.date
-usdm = usdm.rename(columns={"StateAbbreviation": "state_alpha"})
-usdm = usdm[["state_alpha", "valid_end"] + DLEVEL_COLS].copy()
-# Coerce D-levels to float (CSV reads them as float already, belt-and-braces).
-for c in DLEVEL_COLS:
-    usdm[c] = pd.to_numeric(usdm[c], errors="coerce")
-usdm = usdm.sort_values(["state_alpha", "valid_end"]).reset_index(drop=True)
-print(f"  {len(usdm):,} weekly rows, "
-      f"states: {sorted(usdm['state_alpha'].unique())}, "
-      f"{usdm['valid_end'].min()}..{usdm['valid_end'].max()}")
+    if not os.path.exists(args.in_path):
+        raise SystemExit(f"ERROR: input not found: {args.in_path}")
 
-print(f"\nReading GEOID directory {args.geoid_source}...")
-geo_dir = pd.read_csv(args.geoid_source)
-geo_dir["GEOID"] = geo_dir["GEOID"].astype(str).str.zfill(5)
-geo_dir = geo_dir[["GEOID", "state_alpha", "year"]].drop_duplicates()
-geo_dir["year"] = geo_dir["year"].astype(int)
-print(f"  {len(geo_dir):,} (GEOID, year) rows, "
-      f"{geo_dir['GEOID'].nunique()} GEOIDs, "
-      f"{geo_dir['year'].min()}..{geo_dir['year'].max()}, "
-      f"states: {sorted(geo_dir['state_alpha'].unique())}")
+    print(f"Reading gridMET parquet: {args.in_path}")
+    df_all = pd.read_parquet(args.in_path)
 
-# Pre-slice USDM by state for speed.
-usdm_by_state = {st: g.reset_index(drop=True)
-                 for st, g in usdm.groupby("state_alpha", sort=False)}
+    # Defensive normalizations.
+    df_all["GEOID"] = df_all["GEOID"].astype(str).str.zfill(5)
+    df_all["date"] = pd.to_datetime(df_all["date"])
 
-# 1) Build per-(state_alpha, year, forecast_date) feature rows. This is
-#    cheap: 5 states * ~20 years * 4 dates = ~400 rows.
-print("\nDeriving state-level as-of features...")
-state_rows = []
-years_in_geo = sorted(geo_dir["year"].unique())
-for state in sorted(usdm_by_state):
-    df_state = usdm_by_state[state]
-    for year in years_in_geo:
-        for fd_label, (mm, dd) in FORECAST_DATES.items():
-            cutoff = dt.date(year, mm, dd)
-            feat = build_features_for_cutoff(df_state, year, cutoff)
-            if feat is None:
-                continue
-            row = {"state_alpha": state, "year": int(year), "forecast_date": fd_label}
-            row.update(feat)
-            state_rows.append(row)
+    # Required columns.
+    required = {"GEOID", "date", "tmin_c", "tmax_c", "prcp_mm", "srad_mjm2", "vpd_kpa"}
+    missing = required - set(df_all.columns)
+    if missing:
+        raise SystemExit(f"ERROR: input missing columns: {sorted(missing)}")
 
-state_feat = pd.DataFrame(state_rows)
-print(f"  {len(state_feat):,} (state_alpha, year, forecast_date) rows")
+    print(f"  {len(df_all):,} rows  "
+          f"({df_all['date'].min().date()} .. {df_all['date'].max().date()})  "
+          f"{df_all['GEOID'].nunique()} GEOIDs")
 
-# 2) Build the full (GEOID, year, forecast_date) skeleton, then left-join
-#    the state-level features. This guarantees the output is always cleanly
-#    keyed on all three columns, even for (year, forecast_date) combos that
-#    have no USDM reading available (in which case the feature columns are
-#    NaN, and merge_all.py decides downstream whether to drop or impute).
-print("\nBroadcasting to GEOID...")
-fd_labels = list(FORECAST_DATES.keys())
-skeleton = (geo_dir.assign(_k=1)
-                   .merge(pd.DataFrame({"forecast_date": fd_labels, "_k": 1}), on="_k")
-                   .drop(columns="_k"))
-out = skeleton.merge(state_feat, on=["state_alpha", "year", "forecast_date"], how="left")
-out = out[["GEOID", "year", "forecast_date",
-           "d0_pct", "d1_pct", "d2_pct", "d3_pct", "d4_pct", "d2plus"]]
-out = out.sort_values(["GEOID", "year", "forecast_date"]).reset_index(drop=True)
+    geoids = sorted(df_all["GEOID"].unique())
+    years = sorted(df_all["date"].dt.year.unique())
+    print(f"  GEOIDs: {len(geoids)}, years: {len(years)} ({years[0]}..{years[-1]})")
 
-print(f"\nFeature rows: {len(out):,}")
-print(f"Columns: {list(out.columns)}")
-print("\nSample (head):")
-print(out.head(8).to_string(index=False))
+    # Iterate (GEOID, year, forecast_date).
+    total = len(geoids) * len(years) * len(FORECAST_DATES)
+    print(f"\nDeriving features for {total:,} (GEOID, year, forecast_date) combos...")
 
-print("\nCoverage by forecast_date:")
-print(out.groupby("forecast_date").size().to_string())
+    out_rows = []
+    # Group by GEOID once for efficiency (avoid repeated full-table scans).
+    by_geoid = df_all.groupby("GEOID", sort=False)
+    n_done = 0
+    for geoid, df_g in by_geoid:
+        for year in years:
+            for fd_label, (mm, dd) in FORECAST_DATES.items():
+                cutoff = dt.date(int(year), mm, dd)
+                feats = build_features_for_cutoff(df_g, int(year), cutoff)
+                row = {"GEOID": str(geoid), "year": int(year), "forecast_date": fd_label}
+                row.update(feats)
+                out_rows.append(row)
+                n_done += 1
+        if (geoids.index(geoid) + 1) % 50 == 0:
+            print(f"  {geoids.index(geoid) + 1}/{len(geoids)} GEOIDs done")
 
-# QC: any all-null feature columns? Sanity-check D0 >= D1 >= D2 >= D3 >= D4
-# on the state-level intermediate (cheaper, and identical after broadcast).
-feat_cols = ["d0_pct", "d1_pct", "d2_pct", "d3_pct", "d4_pct", "d2plus"]
-print("\nNull counts:")
-for c in feat_cols:
-    n = out[c].isna().sum()
-    print(f"  {c:10s} {n:>6,}  ({100*n/len(out):5.1f}%)")
+    out = pd.DataFrame(out_rows)
+    # Order columns for readability.
+    feature_cols = [
+        "gdd_cum_f50_c86", "edd_hours_gt86f", "edd_hours_gt90f",
+        "vpd_kpa_veg", "vpd_kpa_silk", "vpd_kpa_grain",
+        "prcp_cum_mm", "dry_spell_max_days",
+        "srad_total_veg", "srad_total_silk", "srad_total_grain",
+    ]
+    out = out[["GEOID", "year", "forecast_date"] + feature_cols]
+    out = out.sort_values(["GEOID", "year", "forecast_date"]).reset_index(drop=True)
 
-print("\nMonotonicity check (D0 >= D1 >= D2 >= D3 >= D4) on state intermediate:")
-sf = state_feat.dropna(subset=["d0_pct", "d1_pct", "d2_pct", "d3_pct", "d4_pct"])
-viol = ((sf["d0_pct"] < sf["d1_pct"] - 1e-9) |
-        (sf["d1_pct"] < sf["d2_pct"] - 1e-9) |
-        (sf["d2_pct"] < sf["d3_pct"] - 1e-9) |
-        (sf["d3_pct"] < sf["d4_pct"] - 1e-9))
-print(f"  violations: {int(viol.sum())} / {len(sf):,}")
+    # ---- QC tail ----------------------------------------------------------
+    print(f"\n{'='*60}")
+    print(f"OUT: {len(out):,} rows  ({out['year'].min()}-{out['year'].max()})")
+    print(f"\nCoverage by year:")
+    print(out.groupby("year").size().to_string())
+    print(f"\nCoverage by forecast_date:")
+    print(out.groupby("forecast_date").size().to_string())
+    print(f"\nNull counts per feature col:")
+    for c in feature_cols:
+        nn = int(out[c].isna().sum())
+        pct = 100 * nn / len(out) if len(out) else 0
+        print(f"  {c:25s} {nn:>6,} ({pct:5.1f}%)")
+    print(f"\nExpected: vpd_kpa_grain and srad_total_grain ~25% null "
+          f"(structural NaN at 08-01).")
 
-import os
-os.makedirs(os.path.dirname(args.out_path) or ".", exist_ok=True)
-out.to_csv(args.out_path, index=False)
-print(f"\nWrote {args.out_path}  ({os.path.getsize(args.out_path)/1e6:.1f} MB)")
+    out.to_csv(args.out, index=False)
+    print(f"\nSaved to {args.out}")
+
+
+if __name__ == "__main__":
+    main()

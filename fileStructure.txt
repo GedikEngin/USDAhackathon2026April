@@ -1,4 +1,4 @@
-tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 --dirsfirst
+tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|.tif|Val|inference_outputs|samples' -L 5 --dirsfirst
 .
 ├── agent
 │   ├── __init__.py

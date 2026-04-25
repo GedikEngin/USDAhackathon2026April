@@ -31,12 +31,29 @@ env/
 # Everything under data/ is regeneratable from scripts/*.py
 data/
 
+# Phase 2 CDL — 17.6 GB raw + 3 GB derived masks, regeneratable
+phase2/cdl/
+
+# Phase 2 satellite imagery downloads and intermediates
+phase2/data/hls/
+phase2/data/ndvi/
+phase2/data/drought/
+
 # Large derived artifacts in scripts/ — also regeneratable
 scripts/gridmet_county_daily_*.parquet
 scripts/training_master.parquet
 scripts/*.nc
-scripts/*.tif
-scripts/*.tiff
+
+# ============================================================
+# Raster files (anywhere in repo)
+# ============================================================
+*.tif
+*.tiff
+*.TIF
+*.TIFF
+*.tif.aux.xml
+*.tfw
+*.ovr
 
 # ============================================================
 # gSSURGO source databases — too large for git, downloaded separately

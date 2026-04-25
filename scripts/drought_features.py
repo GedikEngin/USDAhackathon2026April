@@ -23,7 +23,7 @@ convention.
 USDM is published WEEKLY at the state level (StateAbbreviation only; no
 county FIPS in the source). To produce a per-(GEOID, year, forecast_date)
 table we broadcast each state's reading to every GEOID in that state. The
-GEOID directory is sourced from nass_corn_5states_features.csv (which
+GEOID directory is sourced from nass_corn_5states_features_v2.csv (which
 already has GEOID + state_alpha + year for the modeling universe).
 
 AS-OF RULE: for forecast date D in year Y, use the USDM row whose ValidEnd
@@ -35,7 +35,7 @@ information from days that bracket the forecast date.
 Usage:
   python drought_features.py
   python drought_features.py --in phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv \
-                             --geoid-source scripts/nass_corn_5states_features.csv \
+                             --geoid-source scripts/nass_corn_5states_features_v2.csv \
                              --out scripts/drought_county_features.csv
 """
 
@@ -48,7 +48,7 @@ import pandas as pd
 # --- Config ----------------------------------------------------
 
 DEFAULT_IN           = "phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv"
-DEFAULT_GEOID_SOURCE = "scripts/nass_corn_5states_features.csv"
+DEFAULT_GEOID_SOURCE = "scripts/nass_corn_5states_features_v2.csv"
 DEFAULT_OUT          = "scripts/drought_county_features.csv"
 
 # Forecast-date suffixes (strings) -> (month, day). Match weather_features.py

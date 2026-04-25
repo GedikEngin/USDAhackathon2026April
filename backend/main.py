@@ -1,5 +1,6 @@
 """
-FastAPI backend for the Land Use & GHG Analysis System.
+FastAPI backend for the Land Use & GHG Analysis System
++ v2 Yield Forecast endpoints.
 
 Run (from repo root):
   uvicorn backend.main:app --app-dir . --host 0.0.0.0 --port 8000
@@ -58,22 +59,25 @@ log = logging.getLogger("backend")
 
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "model" / "segformer-b1-run1" / "best.pt"
 
+# v2 forecast defaults. Both overridable via env vars to enable hot-swap (D.1
+# bundle, alternative master parquet) without touching code.
+DEFAULT_FORECAST_BUNDLE_DIR = PROJECT_ROOT / "models" / "forecast"
+DEFAULT_FORECAST_MASTER     = PROJECT_ROOT / "scripts" / "training_master_v2.parquet"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ---- vision model ----
+    # ---- vision model (v1) ----
     ckpt_path = Path(os.environ.get("LANDUSE_CHECKPOINT", DEFAULT_CHECKPOINT))
     log.info("Starting up: loading model from %s", ckpt_path)
     app.state.engine = InferenceEngine(checkpoint_path=ckpt_path)
     log.info("Model loaded")
 
-    # ---- reasoning agent (optional at startup) ----
-    # If ANTHROPIC_API_KEY is missing, we still serve /classify, /emissions,
-    # /simulate. /agent/report will 503 with a clear message.
+    # ---- reasoning agent (v1; optional at startup) ----
     app.state.agent = None
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            from agent.claude import ClaudeAgent  # local import: anthropic is optional dep
+            from agent.claude import ClaudeAgent  # local: anthropic optional
             app.state.agent = ClaudeAgent()
             log.info(
                 "Reasoning agent ready (model=%s, max_turns=%d)",
@@ -87,18 +91,85 @@ async def lifespan(app: FastAPI):
             "Other endpoints are unaffected."
         )
 
+    # ---- v2 forecast artifacts ----
+    # Loaded once. The route handlers are pure read-only over these objects,
+    # so no locking is needed under FastAPI's single-process default.
+    app.state.forecast_loaded = False
+    forecast_bundle_dir = Path(
+        os.environ.get("FORECAST_BUNDLE_DIR", str(DEFAULT_FORECAST_BUNDLE_DIR))
+    )
+    forecast_master_path = Path(
+        os.environ.get("FORECAST_MASTER_PATH", str(DEFAULT_FORECAST_MASTER))
+    )
+    try:
+        log.info("Loading forecast bundle from %s", forecast_bundle_dir)
+        log.info("Loading forecast master parquet %s", forecast_master_path)
+
+        # Local imports — keep boot light if forecast deps are absent.
+        from forecast.analog import AnalogIndex
+        from forecast.data import load_master, train_pool
+        from forecast.detrend import fit as fit_trend
+        from forecast.features import fit_standardizer
+        from forecast.regressor import RegressorBundle
+        from backend.forecast_routes import (
+            build_county_name_lookup, build_history_lookup,
+        )
+
+        master_df = load_master(str(forecast_master_path))
+        train_df, mh_result = train_pool(master_df, n_min_history=10)
+        standardizer = fit_standardizer(train_df)
+        trend = fit_trend(train_df)
+        analog_index = AnalogIndex.fit(train_df, standardizer, trend)
+        bundle = RegressorBundle.load(str(forecast_bundle_dir))
+
+        # Read VERSION.txt next to the bundle, default if absent.
+        version_path = forecast_bundle_dir / "VERSION.txt"
+        if version_path.exists():
+            model_version = version_path.read_text().strip()
+        else:
+            model_version = "unversioned"
+            log.warning("No VERSION.txt at %s; model_version='unversioned'.", version_path)
+
+        history_lookup = build_history_lookup(master_df)
+        county_name_lookup = build_county_name_lookup(master_df)
+
+        # Stash on app.state for the routes.
+        app.state.master_df = master_df
+        app.state.train_df = train_df
+        app.state.standardizer = standardizer
+        app.state.trend = trend
+        app.state.analog_index = analog_index
+        app.state.bundle = bundle
+        app.state.model_version = model_version
+        app.state.history_lookup = history_lookup
+        app.state.county_name_lookup = county_name_lookup
+        app.state.forecast_loaded = True
+
+        log.info(
+            "Forecast ready: bundle=%s, master=%s rows=%d, train=%d rows, %d GEOIDs kept",
+            model_version, forecast_master_path.name, len(master_df), len(train_df),
+            mh_result.n_kept,
+        )
+    except Exception as exc:
+        log.exception("Forecast artifacts unavailable: %s", exc)
+        log.warning(
+            "/forecast/* will return 503 until lifespan succeeds. Other endpoints unaffected."
+        )
+
     yield
     log.info("Shutting down")
 
 
 app = FastAPI(
-    title="Land Use & GHG Analysis",
+    title="Land Use & GHG Analysis + Yield Forecast",
     description=(
-        "Satellite image -> land-class segmentation -> emissions estimate -> "
-        "LLM-generated sustainability report. Grounded in a cited emissions "
-        "factor table (IPCC AR6, EPA, EDGAR, EIA, JRC, IPCC 2019)."
+        "v1: satellite tile -> land-class segmentation -> emissions estimate -> "
+        "LLM-generated sustainability report.\n"
+        "v2: county-level corn yield forecast for 5 states (CO, IA, MO, NE, WI) "
+        "at 4 forecast dates, with analog-year cones of uncertainty and Claude-narrated "
+        "interpretation."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -109,8 +180,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve the single-page frontend at /ui if it exists. Backend-only usage
-# (no frontend/ directory) still works — we just skip the mount.
+# v2 forecast router. Endpoints: /forecast/states, /forecast/{state}, /forecast/narrate.
+# Returns 503 from the route layer if the forecast lifespan didn't load.
+from backend.forecast_routes import router as forecast_router  # noqa: E402
+app.include_router(forecast_router)
+
+# Serve the single-page frontend at /ui if it exists.
 _frontend_dir = PROJECT_ROOT / "frontend"
 if _frontend_dir.is_dir():
     app.mount(
@@ -132,7 +207,6 @@ def _emissions_result_to_report(result: Any) -> EmissionsReport:
         name: PerClassEmissions(**row) for name, row in d["per_class"].items()
     }
 
-    # Collect every SRC-n referenced by the classes actually present.
     src_keys: set[str] = set()
     for class_name in d["per_class"].keys():
         factor = LAND_USE_EMISSIONS.get(class_name)
@@ -154,15 +228,7 @@ def _emissions_result_to_report(result: Any) -> EmissionsReport:
 
 
 def _rehydrate_emissions_result(report: EmissionsReport) -> EmissionsResult:
-    """
-    Reverse of _emissions_result_to_report.
-
-    The agent's AgentState needs an EmissionsResult dataclass (see
-    agent/tools.py). The frontend gave us back the same fields as a pydantic
-    model; we just re-inflate them into the dataclass. No recomputation.
-    `sources_cited` lives on the pydantic layer only — EmissionsResult never
-    had that field, so we drop it here.
-    """
+    """Reverse of _emissions_result_to_report."""
     per_class: dict[str, dict[str, float]] = {}
     for name, row in report.per_class.items():
         per_class[name] = {
@@ -185,14 +251,14 @@ def _rehydrate_emissions_result(report: EmissionsReport) -> EmissionsResult:
 
 @app.get("/", tags=["meta"])
 def root():
-    # If the frontend exists on disk, bounce to the UI. Otherwise return
-    # machine-readable meta so this still acts like a normal API root.
     if (PROJECT_ROOT / "frontend" / "index.html").exists():
         return RedirectResponse(url="/ui/")
     return {
-        "service": "land-use-ghg",
+        "service": "land-use-ghg + yield-forecast",
         "endpoints": [
-            "/classify", "/emissions", "/simulate", "/agent/report", "/docs"
+            "/classify", "/emissions", "/simulate", "/agent/report",
+            "/forecast/states", "/forecast/{state}", "/forecast/narrate",
+            "/docs",
         ],
     }
 
@@ -201,10 +267,13 @@ def root():
 def health():
     engine = getattr(app.state, "engine", None)
     agent = getattr(app.state, "agent", None)
+    forecast_loaded = bool(getattr(app.state, "forecast_loaded", False))
     return {
         "status": "ok" if engine is not None else "loading",
         "device": str(engine.device) if engine else None,
         "agent_available": agent is not None,
+        "forecast_available": forecast_loaded,
+        "model_version": getattr(app.state, "model_version", None),
     }
 
 
@@ -289,9 +358,8 @@ def agent_report(req: AgentReportRequest):
     """
     Run the reasoning agent against a pre-classified image.
 
-    The frontend is expected to have already called /classify and is echoing
-    the `percentages` + `emissions` + `total_area_ha` back to us. This keeps
-    follow-up queries cheap — no re-inference, no server-side session state.
+    Stateless. Frontend echoes the /classify result back; we re-inflate the
+    EmissionsResult dataclass and run the agent loop.
     """
     agent = getattr(app.state, "agent", None)
     if agent is None:
@@ -303,8 +371,7 @@ def agent_report(req: AgentReportRequest):
             ),
         )
 
-    # Rebuild the dataclass AgentState expects.
-    from agent.tools import AgentState  # noqa: E402 — local import keeps module boot light
+    from agent.tools import AgentState  # noqa: E402
 
     state = AgentState(
         percentages=dict(req.percentages),
@@ -313,7 +380,6 @@ def agent_report(req: AgentReportRequest):
         image_label=req.image_label,
     )
 
-    # Honor max_turns override without mutating the shared agent instance.
     if req.max_turns is not None and req.max_turns != agent.max_turns:
         from agent.claude import ClaudeAgent  # noqa: E402
         run_agent = ClaudeAgent(

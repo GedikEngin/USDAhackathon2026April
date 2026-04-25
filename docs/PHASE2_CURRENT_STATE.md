@@ -4,93 +4,112 @@
 
 **Project:** USDA Hackathon 2026 April — Corn Yield Forecasting
 **Repo:** `~/dev/USDAhackathon2026April`
-**Last updated:** 2026-04-25, end of Phase C — **PHASE C COMPLETE (gate passed on val 2023 EOS at +46.7% lift, threshold 15%)**
+**Last updated:** 2026-04-25, end of Phase 2-D.1.a (CDL annual masks landed).
 
 ---
 
-## v2 status: Phases A, B, and C are fully closed. Ready to start Phase D or Phase E (independent).
+## v2 status: Phases A, B, C done. D.1.a done. D.1.b next.
 
-The v2 pipeline now has all three pieces of the brief's required output for the 5 states × 4 forecast dates:
+**Pipeline state at a glance:**
 
-- **Point estimate:** XGBoost regressor, 4 boosters (one per forecast_date), trained on 5,580 county-year rows each. Bundle persisted to `models/forecast/regressor_*.json` + `.meta.json` sidecars.
-- **Cone of uncertainty:** Phase B same-GEOID K=5 analog retrieval over 17-feature standardized embedding, percentiles (10, 50, 90) over detrended yields, retrended at query county.
-- **Driver attribution (for narration prep):** SHAP values via `Booster.predict(pred_contribs=True)`, no `shap` library dependency. Per-row top-K and global feature importance available.
+- **Phase A** — six data pipelines feeding `scripts/training_master.parquet` (25,872 × 48). Closed with full data dictionary. ✅
+- **Phase B** — analog-year retrieval baseline + cone-of-uncertainty MVP. Cone calibrated within target band on 2023+2024 backtest; analog-median point estimate beats the 5-year county-mean naive baseline. Gate passed. ✅
+- **Phase C** — XGBoost per-forecast-date regressors trained, EOS gate passed at +46.7% RMSE improvement vs Phase B analog-median (threshold was +15%). Bundle in `models/forecast/regressor_*.json`. **All 5 MODIS NDVI columns stripped from the regressor's feature set** (Phase 2-C.1) after SHAP showed `ndvi_peak` dominating predictions across every forecast date — leaking end-of-season info into August forecasts. The Phase C regressor currently has zero remote-sensing features. ✅
+- **Phase D.1** — Prithvi frozen-feature-extractor sub-phase. Replaces the stripped MODIS NDVI with HLS chips encoded by Prithvi-EO-2.0-300M-TL.
+  - **D.1.a CDL annual masks**: 60 binary corn masks at `phase2/cdl/cdl_corn_mask_<state>_<year>.tif` for 5 states × 2013–2024. ✅
+  - D.1.b HLS download + county chip extraction. **NEXT.**
+  - D.1.c (inline with D.1.b) chip extraction with corn-richest 224×224 sub-window per county.
+  - D.1.d Prithvi inference + `embeddings_v1.parquet`.
+  - D.1.e Regressor retrain on 2013–2022 + 4-row ablation table → gate decision.
 
-`scripts/backtest_phase_c.py` is the production scoring harness. It writes one CSV row per (year, state, date) with the regressor point, the analog cone, the analog-median (Phase B baseline) point, and the 5-yr-county-mean baseline — all in raw bu/acre, all comparable.
-
-The v1 land-use system is shipped and untouched alongside.
+No backend endpoints, no agent tools, no frontend forecast view yet — those are Phases E, F, G.
 
 ## Project goal (locked)
 
 Build an ML pipeline that predicts corn-for-grain yield (bu/acre) at the **county** level across **5 US states** at four fixed in-season forecast dates (Aug 1, Sep 1, Oct 1, end-of-season), aggregates to state, and produces a calibrated cone of uncertainty using **analog-year retrieval**. A Claude Haiku agent narrates the forecast.
 
 - **Target states:** Colorado (CO), Iowa (IA), Missouri (MO), Nebraska (NE), Wisconsin (WI)
-- **Time range:** **2005–2024** (20 years; 2024 holdout, 2023 validation, 2005–2022 train)
-- **Spatial unit:** US county, joined via 5-digit GEOID (state FIPS + county FIPS, both zero-padded)
+- **Time range:** **2005–2024** (Phase B/C train 2005–2022, val 2023, holdout 2024). **Phase D.1 train pool narrows to 2013–2022** because HLS only exists 2013+; this is intentional for the ablation gate test.
+- **Spatial unit:** US county, joined via 5-digit GEOID
 - **Target variable:** `yield_bu_acre_all` (combined-practice corn grain yield, bu/acre), exposed in the master table as `yield_target`
 
-See `PHASE2_PROJECT_PLAN.md` for the full vision and `PHASE2_PHASE_PLAN.md` for the phase breakdown with go/no-go gates.
-
----
+See `PHASE2_PROJECT_PLAN.md` for the full vision, `PHASE2_PHASE_PLAN.md` for the phase breakdown with go/no-go gates, and `PHASE2_DECISIONS_LOG.md` for the chronological decision record.
 
 ## What exists in the repo today
 
 ### v1 (untouched, fully shipped)
 
-The full v1 land-use & GHG analysis system is in place. See the v1 `CURRENT_STATE.md` for canonical detail. v2 reuses v1's FastAPI shell, frontend chrome, and Claude agent infrastructure but does not modify them.
+The full v1 land-use & GHG analysis system is in place. v2 reuses v1's FastAPI shell, frontend chrome, and Claude agent infrastructure but does not modify them.
 
-### v2 — Phase A artifacts (data acquisition + master table)
+### v2 — Phase A artifacts
 
-- **`scripts/nass_pull.py`** — 2005–2024, 5 states, county-level corn yield/production/area at 3 practice levels.
-- **`scripts/nass_features.py`** — engineers `yield_target`, `irrigated_share`, `harvest_ratio`, `acres_harvested_noirr_derived` from the raw pull.
-- **`scripts/nass_corn_5states_2005_2024.csv`** — raw NASS pull output (6,837 × 16).
-- **`scripts/nass_corn_5states_features.csv`** — engineered features (6,834 × 10).
-- **`scripts/ndvi_county_extraction.js`** — version-controlled GEE script. Per-year Export task pattern.
-- **`phase2/data/ndvi/corn_ndvi_5states_<year>.csv` × 21** — NDVI county features 2004–2024. Pre-scaled (`× 0.0001` server-side).
-- **`scripts/gssurgo_county_features.py`** — reads each state's gSSURGO `.gdb`, area-weighted county aggregates from the Valu1 table.
-- **`scripts/gssurgo_county_features.csv`** — output (443 × 13). Static across years.
-- **`scripts/gridmet_pull.py`** — daily weather pull from gridMET, 5 states, 2005–2024.
-- **`data/v2/weather/raw/gridmet_county_daily_<year>.parquet` × 20** — raw daily county-aggregated weather.
-- **`scripts/gridmet_county_daily_2005_2024.parquet`** — combined daily weather, all years.
-- **`scripts/weather_features.py`** — derives per-`(GEOID, year, forecast_date)` features. Single as-of slice; phase windows clipped to cutoff. GDD F50/C86, EDD via single-sine, VPD per phase, prcp/dry-spell, srad per phase.
-- **`scripts/weather_county_features.csv`** — output (35,440 × 14).
-- **`phase2/data/drought/drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv`** — raw weekly USDM, state-level, 2000–2026.
-- **`scripts/drought_features.py`** — broadcasts USDM state readings to GEOIDs via NASS GEOID directory; as-of rule `valid_end < forecast_date` (strict).
-- **`scripts/drought_county_features.csv`** — output (27,336 × 9). 0 nulls.
-- **`scripts/merge_all.py`** — outer-joins all six sources into the master table. Includes 2005-min-year filter, HLS feature allowlist, NDVI schema-drift guard, per-layer row-count invariant asserts, and a comprehensive QC tail.
-- **`scripts/training_master.parquet`** — **canonical Phase B/C/D input.** 25,872 rows × 48 columns. Keyed on `(GEOID, year, forecast_date)`. Full coverage rate 98.1% (excl. HLS).
-- **`docs/PHASE2_DATA_DICTIONARY.md`** — column-by-column reference for the master table.
+- `scripts/nass_pull.py` + `scripts/nass_features.py` — NASS yield 2005–2024.
+- `scripts/nass_corn_5states_2005_2024.csv` (raw, 6,837 × 16); `scripts/nass_corn_5states_features.csv` (engineered, 6,834 × 10).
+- `scripts/ndvi_county_extraction.js` — version-controlled GEE script.
+- `phase2/data/ndvi/corn_ndvi_5states_<year>.csv × 21` — MODIS NDVI 2004–2024.
+- `scripts/gssurgo_county_features.py`; `scripts/gssurgo_county_features.csv` (443 × 13, static across years).
+- `scripts/gridmet_pull.py`; `data/v2/weather/raw/gridmet_county_daily_<year>.parquet × 20`; `scripts/gridmet_county_daily_2005_2024.parquet`; `scripts/weather_features.py`; `scripts/weather_county_features.csv` (35,440 × 14).
+- `phase2/data/drought/drought_USDM-...csv` (raw, state-level); `scripts/drought_features.py`; `scripts/drought_county_features.csv` (27,336 × 9, 0 nulls).
+- `scripts/merge_all.py`; `scripts/training_master.parquet` (**25,872 × 48**, full coverage 98.1%).
+- `docs/PHASE2_DATA_DICTIONARY.md` — column-by-column reference.
 
-### v2 — Phase B artifacts (analog retrieval cone)
+### v2 — Phase B artifacts (forecast/ package)
 
-- **`forecast/features.py`** — `EMBEDDING_COLS` (15 features at 08-01, 17 at later dates), `Standardizer` (per-(forecast_date, feature) z-score), `build_embedding_matrix`. Fit on the train pool (2005–2022, post min-history filter).
-- **`forecast/data.py`** — `load_master`, `train_pool` (post min-history filter), `val_pool` (2023), `holdout_pool` (2024), `SPLIT_YEARS`. Single source of truth for "how to slice the master table."
-- **`forecast/detrend.py`** — per-county linear OLS trend with state-median fallback (`CountyTrend`). Replaces the per-state trend after WI overshoot diagnostic in Phase B.
-- **`forecast/analog.py`** — `AnalogIndex` (per-date `BallTree`), pool strategies `cross_county` and `same_geoid` (locked at `same_geoid` for Phase B+C production), K=5. Returns `Analog` records with both raw and detrended yields.
-- **`forecast/cone.py`** — `build_cone(analogs, trend, query_geoid, query_year, ...)`. Percentiles in detrended space, retrend at query county.
-- **`forecast/aggregate.py`** — `state_forecast_from_records` rolls county cones up via planted-acres-weighted mean of percentile values. Caveat documented (percentiles don't average linearly).
-- **`forecast/baseline.py`** — naive 5-year county-mean baseline for Phase B gate comparison; carries forward into Phase C reporting.
-- **`forecast/recalibrate.py`** — per-(state, forecast_date) additive bias correction. Used by Phase B post-recal pipeline; **NOT used in Phase C** (recal dropped after holdout-vs-val sign-flip analysis).
-- **`scripts/backtest_baseline.py`** — Phase B's full backtest harness with sweep over (pool, k), summary, gate evaluation pre- and post-recal.
+- `forecast/data.py` — `load_master`, train/val/holdout splits, min-history filter (10 train years per county to be eligible as analog).
+- `forecast/features.py` — `EMBEDDING_COLS` (the standardized retrieval embedding); `VALID_FORECAST_DATES = ("08-01", "09-01", "10-01", "EOS")`.
+- `forecast/analog.py` — K-NN over the embedding; returns analog (GEOID, year) pairs with distances and observed yields.
+- `forecast/cone.py` — percentile band over analog yields.
+- `forecast/aggregate.py` — county→state planted-acres-weighted rollup.
+- `forecast/baseline.py` — naive 5-year county mean (gate reference).
+- `forecast/detrend.py`, `forecast/recalibrate.py` — utility transforms used in the cone calibration loop.
+- `scripts/backtest_baseline.py` — Phase B gate harness; results at `runs/backtest_baseline_*.csv`.
 
-### v2 — Phase C artifacts (XGBoost point estimate + SHAP)
+### v2 — Phase C artifacts
 
-- **`forecast/regressor.py`** — `Regressor` (single-date), `RegressorBundle` (4-date dict), `fit`, `fit_all_dates`. Native xgb JSON save/load with `.meta.json` sidecars (`best_iteration`, `feature_cols`, `params`, `train_metrics`). `_add_derived_columns` derives `is_irrigated_reported` + 5 state one-hots; `_build_dmatrix` is the single source of truth for DMatrix construction (used by both `predict` and `shap_values_for`). **`_NDVI = []` with explanatory block comment** — all 5 MODIS NDVI cols dropped after Phase 2-C.1 SHAP analysis showed leakage.
-- **`forecast/explain.py`** — SHAP attribution. `Driver` (one feature contribution), `Attribution` (full matrix + base + predictions). `top_drivers` (Phase F surface), `top_drivers_for_bundle` (date-dispatching), `attribution_table` (long-form for diagnostics), `feature_importance` (mean_abs / mean_signed). Uses `Booster.predict(pred_contribs=True)`; no `shap` library dependency. Built-in additivity check (`base + Σ shap == prediction` to 1e-2).
-- **`scripts/train_regressor.py`** — Phase C training driver. Sweeps `max_depth × learning_rate × min_child_weight` (12 configs/date × 4 dates = 48 fits; ~15s wall). Picks best per date by county-level val RMSE. Writes bundle to `models/forecast/` + sweep CSV to `runs/phase_c_sweep_<ts>.csv`.
-- **`scripts/backtest_phase_c.py`** — Phase C scoring harness. Regressor point + Phase B cone, both at state level. Reports per-(year, state, date), per-(year, state), per-(state, date) val residuals. Gate evaluation (regressor vs analog-median pre-recal at val EOS, threshold 15%). Writes `runs/backtest_phase_c_<ts>.csv`.
-- **`scripts/smoke_explain.py`** — 6-section assertion + eyeball test for `explain.py`. Verifies shapes, additivity, ranking correctness, dispatch, and error paths against the trained bundle.
-- **`models/forecast/regressor_{08-01,09-01,10-01,EOS}.json`** + `.meta.json` — the persisted Phase C bundle. **Trained without MODIS NDVI** in the feature set (37 features at 09-01/10-01/EOS, 35 at 08-01).
+- `forecast/regressor.py` — `RegressorBundle` (4 per-date XGBoost boosters); `FEATURE_COLS` per forecast_date; `_NDVI = []` (intentionally empty, see decisions log entry 2-C.1).
+- `forecast/explain.py` — SHAP-based `top_drivers(geoid, year, date, k=3)`.
+- `scripts/train_regressor.py` — driver for the hyperparameter sweep.
+- `scripts/backtest_phase_c.py` — Phase C gate harness; results at `runs/backtest_phase_c_*.csv`.
+- `models/forecast/regressor_<date>.json + .meta.json` — the trained bundle. **Read-only from D.1's perspective.** D.1 retrain writes to `models/forecast_d1/`.
 
-### v2 — to write (Phase D onward)
+### v2 — Phase D.1.a artifacts (this session)
 
-- HLS pull pipeline (consistent schema, county-level if feasible) + Prithvi as frozen feature extractor. **Phase D.1.**
-- Optional Prithvi end-to-end fine-tune. **Phase D.2.**
-- `/forecast/{state}` endpoint + frontend forecast view. **Phase E.**
-- Forecast narration agent with 4 tools. **Phase F.**
-- Holdout evaluation + ablation table + presentation deck. **Phase G.**
+- `scripts/download_cdl.py` — pulls per-state CDL geotiffs from CropScape `GetCDLFile` API. Resumable, polite rate-limiting (mirrors `nass_pull.py`).
+- `scripts/cdl_to_corn_mask.py` — converts categorical CDL to binary corn masks at EPSG:5070 / 30 m / uint8 / LZW. Reprojection-aware (handles 2024's native 10 m by nearest-neighbor downsample).
+- `phase2/cdl/raw/cdl_<state>_<year>.tif × 60` — raw CDL (17.6 GB). Retained through D.1; deleted in cleanup pass at end of phase.
+- `phase2/cdl/cdl_corn_mask_<state>_<year>.tif × 60` — binary corn masks (uint8, EPSG:5070, 30 m). Inputs to D.1.b/c chip masking.
+- QC table inline in the run log shows corn fractions: IA 27.5–29.9%, NE 14.0–16.2%, WI 6.7–7.5%, MO 3.9–5.0%, CO 1.4–2.1%. Year-over-year drift ±2 pp confirms masks track real rotation.
 
-## Master table — at-a-glance (unchanged from Phase A.6)
+### v2 — superseded / deleted in this session
+
+- `phase2/data/hls/hls_vi_features*.csv` — old state-level HLS slice CSVs from the prior pull (5 files). Superseded by D.1.b's per-county chip extraction; deleted.
+- `scripts/hls_county_features.csv` — output of the old `hls_features.py` against the state-level slices. Deleted.
+- `scripts/hls_pull.py`, `scripts/hls_features.py` — kept on disk as **read-only references** for D.1.b; the GDAL/earthaccess auth pattern, Fmask bit decoding, and L30/S30 band-name asymmetry handling are reused. The state-level VI computation logic is dropped. To be deleted in cleanup pass at end of D.1.
+
+### v2 — environment
+
+- New conda env: `forecast-d1` (Python 3.11). Phase A/B/C envs untouched.
+- `torch 2.10.0+cu130`, `torchvision 0.25.0+cu130`, `torchaudio 2.10.0+cu130` — installed from PyTorch's CUDA 13.0 wheel index. Stable, not nightly. Blackwell sm_120 kernels confirmed working.
+- `terratorch 1.2.6`, `rasterio 1.4.4`, `earthaccess 0.17.0`, `xgboost 3.2.0`. Standard geospatial deps (geopandas, shapely, pyproj, fiona) on top.
+- Filesystem: WSL2 native `/dev/sdd`, 881 GB free. All D.1 outputs land under `~/dev/USDAhackathon2026April/data/v2/...` or `~/dev/USDAhackathon2026April/phase2/...`.
+- GPU: RTX 5070 Ti Laptop, 12 GB VRAM, compute capability sm_120. Driver 591.44 / CUDA 13.1. `nvidia-smi` clean. `torch.cuda.is_available() == True`, matmul on GPU verified.
+
+## Phase D.1 plan (what's coming)
+
+See `PHASE2_DECISIONS_LOG.md` entries 2-D.1.kickoff and 2-D.1.a for the full decision rationale. Quick reference:
+
+- **Prithvi variant:** `terratorch_prithvi_eo_v2_300_tl` (300M, temporal+location).
+- **Chip granularity:** county-level. Corn-richest 224×224 sub-window per (county, granule), masked with the year-matched CDL.
+- **Sequence shape:** T=3 chips (vegetative + silking + grain-fill phases). T=2 padded with silking-dup at 08-01 (grain-fill empty).
+- **Pooling:** mean across spatial patches and across T → 1 vector per `(GEOID, year, forecast_date)`.
+- **Train pool for D.1 retrain:** 2013–2022. Phase C-as-is bundle (2005–2022, no Prithvi) preserved as ablation row.
+- **HLS phase windows:** calendar-aligned. `aug1` = Jul 17 – Aug 15; `sep1` = Aug 17 – Sep 15; `oct1` = Sep 17 – Oct 15; `final` = Oct 17 – Nov 15.
+- **Pull architecture:** pull-once per `(state, year)` over full growing season `<year>-05-01 to <year>-11-15`; label chips at index time; pick chips at embed time.
+- **Filters:** granule-level cloud filter 70% (CMR `eo:cloud_cover` ≥ 70% drops the granule pre-download); chip-level corn-fraction filter 5%; granule cap 100 per (state, year, phase).
+- **Output:** `data/v2/hls/chips/<GEOID>/<year>/<phase>_<scene_date>.tif`; index in `data/v2/hls/chip_index.parquet`. Embeddings in `data/v2/prithvi/embeddings_v1.parquet`.
+- **Gate:** Row B (engineered + Prithvi, 2013–2022) ≥ 5% RMSE improvement vs Row A (engineered-only, 2013–2022) on 2023 val EOS.
+
+## Master table — at-a-glance (unchanged from end of Phase A)
 
 ```
 scripts/training_master.parquet
@@ -98,88 +117,43 @@ scripts/training_master.parquet
   size:         2.46 MB
   grain:        (GEOID, year, forecast_date)
   years:        2005–2024 (20 years)
-  GEOIDs:       388 distinct (subset of 443 TIGER counties)
+  states:       CO, IA, MO, NE, WI (5)
+  GEOIDs:       388 distinct (subset of 443 TIGER 2018 counties)
   forecast_d:   08-01, 09-01, 10-01, EOS
   target:       yield_target (bu/acre, combined-practice)
   full coverage: 25,380 / 25,872 (98.1%) excl. HLS
+                 10,575 / 25,872 (40.9%) incl. HLS (HLS only exists 2013+)
 ```
 
-48 columns: 5 keys + 1 target + 5 NASS-aux + 5 NDVI + 11 gSSURGO + 11 weather + 6 drought + 4 HLS. Source script and provenance for each column documented in `PHASE2_DATA_DICTIONARY.md`.
-
-## Phase C — gate verdict and what it does/doesn't say
-
-**Gate (per `PHASE2_PHASE_PLAN`):** trained-regressor RMSE on 2023 val ≥ 15% better than Phase B analog-median (pre-recal) at end-of-season.
-
-**Result:** EOS lift +46.7%. **PASS.**
-
-Per-date breakdown on val 2023:
-- 08-01: regressor RMSE 7.19, analog-median RMSE 10.97, **lift +34.5%**
-- 09-01: regressor RMSE 11.48, analog-median RMSE 11.46, **lift −0.2%** (essentially tied)
-- 10-01: regressor RMSE 7.48, analog-median RMSE 11.62, **lift +35.6%**
-- EOS: regressor RMSE 6.33, analog-median RMSE 11.87, **lift +46.7%** ← official gate number
-
-Three of four dates clear the 15% threshold comfortably. 09-01 ties analog-median; the phase plan explicitly accepts weaker earlier dates ("we just need to confirm the model adds value"), and the gate evaluates EOS only.
-
-### What the gate does NOT say
-
-- **2024 holdout generalization is mediocre.** Regressor LOSES to analog-median at every date in 2024 (regressor EOS RMSE 9.54, analog-median EOS RMSE 8.24). IA-2024 and MO-2024 are the dominant misses (regressor bias −15 and −19 bu respectively); both are years where the gradient-boosted trees' year-anchored prior didn't match the actual outcome. Documented as a known limitation; goes in Phase G's ablation table.
-- **The model leans on `year` heavily.** Mean |SHAP| 13.4, double the next feature. Partly fine (genetic-gain trend is real); partly the reason for 2024 misses (when a year sits off the recent trend, the year-anchored prediction misses by exactly the amount the year doesn't predict).
-- **Weather features are present but secondary.** Top weather drivers by mean |SHAP|: `edd_hours_gt90f` (3.6), `gdd_cum_f50_c86` (2.6), `vpd_kpa_silk` (2.5), `aws0_100` (2.5). Compared to `year` (13.4) and `acres_planted_all` (8.6), they're not the headline signal. The MO 2023 drought response works as designed (`d2_pct` and `vpd_kpa_silk` in top 10), but the model doesn't lean on weather as much as a "geospatial AI yield forecast" framing implies it should.
-
-### The narrative for Phase G / presentation
-
-> "We trained an XGBoost regressor over hand-engineered weather, soil, drought, and management features for each of the four forecast dates. The model passed the 15%-better-than-analog-median gate at end-of-season on val 2023 with +46.7% lift. SHAP analysis confirmed the model relies on agronomically-defensible features (heat stress, growing-degree days, silking-window VPD, plant-available water) once we removed MODIS NDVI from the feature set — that column had been encoding end-of-season information into August forecasts and dominated SHAP attributions before removal. The point estimate's main current limitation is the year-trend prior: when a year's outcome sits off the genetic-gain trend, the regressor underperforms the analog cone, which retrieves cross-decade weather-similar years. Phase D.1 (HLS-derived running NDVI via Prithvi) is the next step to add as-of-honest in-season visual signal."
-
-## Recommended hyperparameter configs picked by the sweep (Phase C, post-NDVI-removal)
-
-| forecast_date | max_depth | learning_rate | min_child_weight | best_iteration | val RMSE (county-level) |
-|---|---|---|---|---|---|
-| 08-01 | 4 | 0.10 | 1 | 241 | 19.24 |
-| 09-01 | 4 | 0.10 | 1 | 231 | 21.53 |
-| 10-01 | 4 | 0.05 | 5 | 342 | 19.98 |
-| EOS   | 6 | 0.05 | 5 | 486 | 19.61 |
-
-Sweep is essentially flat (1.3–1.6 bu spread across 12 configs at every date). Per-date picks differ within sweep noise; not chasing.
-
-## Open architectural questions for Phase D / E
-
-These came out of the Phase C work and are flagged for the next phase kickoff:
-
-- **MODIS NDVI is gone from the regressor's feature set.** Replacement is Phase D.1 (HLS-derived running NDVI clipped to forecast_date, via Prithvi). Phase B's retrieval embedding still uses MODIS NDVI (2 columns) — the leakage that broke point-estimation does not equivalently break retrieval matching.
-- **`year` dominance** could be revisited if/when the feature set widens. Engineered interaction terms (`state_alpha × year` explicit, `vpd_kpa_silk × d2_pct` for drought-stress) could redistribute SHAP attribution toward weather. Defer until Phase D.1 lands; adding interactions before more features is premature.
-- **Per-state bias is documented, not corrected.** Val 2023 shows CO +9 to +18, MO +5 to +11 (post-NDVI), WI −4 to −11. Holdout 2024 shows different signs. A val-fitted recal would help one and hurt the other. If Phase D.1 imagery doesn't shrink these biases organically, may need a more robust calibration approach (multi-year rolling residuals).
-- **2024 holdout generalization** is the real Phase G question. The regressor loses to analog-median on holdout; whether Phase D.1 closes that gap is the v2 lift story. If it doesn't, the analog cone's cross-decade retrieval is the more durable point estimate and we ship it that way.
+48 columns: 5 keys + 1 target + 5 NASS-aux + 5 NDVI + 11 gSSURGO + 11 weather + 6 drought + 4 HLS-state-level (the 4 stale HLS columns will be replaced in D.1's master-table rebuild via left-join on `embeddings_v1.parquet`).
 
 ## Hackathon readiness checklist
 
-- [x] Planning docs (`PHASE2_PROJECT_PLAN.md`, `PHASE2_PHASE_PLAN.md`, `PHASE2_DATA_INVENTORY.md`, `PHASE2_DECISIONS_LOG.md`) drafted
-- [x] All Phase A data pipelines run, master table built, data dictionary written
-- [x] Phase B analog-cone baseline shipped + gate passed post-recal on 2024 holdout
-- [x] **Phase C XGBoost point-estimate model shipped + gate passed on val 2023 EOS at +46.7% lift**
-- [ ] Phase D.1 Prithvi frozen-feature integration + Phase D gate decision
-- [ ] Phase D.2 (conditional) Prithvi fine-tune
+- [x] Phase A definition-of-done met
+- [x] Phase B analog cone shipped + Phase B gate passed
+- [x] Phase C XGBoost regressor shipped + Phase C gate passed (+46.7% lift, threshold +15%)
+- [ ] **Phase D.1 — IN PROGRESS**
+  - [x] D.1.a CDL annual masks (60 files, 5 states × 12 years)
+  - [ ] D.1.b HLS download orchestration + chip extraction
+  - [ ] D.1.c chip extraction (inline with D.1.b)
+  - [ ] D.1.d Prithvi inference + embeddings parquet
+  - [ ] D.1.e Regressor retrain + 4-row ablation table → gate decision
+- [ ] Phase D.2 (conditional on D.1 gate) Prithvi fine-tune
 - [ ] Phase E `/forecast/{state}` endpoint + frontend forecast view
 - [ ] Phase F forecast narration agent with 4 tools
 - [ ] Phase G holdout evaluation, ablation table, presentation deck
 
-## Immediate next steps
+## Immediate next steps (Phase D.1.b)
 
-Phases D and E are independent of each other. Pick either, or run them in parallel chats:
-
-**Phase D.1 (Prithvi frozen feature extractor)** — heavier lift. Requires:
-1. HLS pull pipeline with consistent schema (TB-scale; settle storage strategy first). Possibly county-level granularity instead of state-broadcast (current Phase A HLS slices are state-level, slated for redo).
-2. CDL standalone download for offline corn-pixel masking.
-3. Prithvi weights from HuggingFace.
-4. Per-(GEOID, year, forecast_date) embedding extraction: most-recent-cloud-free HLS chip(s) → Prithvi encoder → mean-pool → embedding vector.
-5. Concat embeddings to engineered features, retrain regressor, ablation vs Phase C-as-is.
-
-**Phase E (backend + frontend)** — lighter lift, builds on already-shipped models. Requires:
-1. New FastAPI endpoints in `backend/main.py` (or new `backend/forecast_routes.py`): `GET /forecast/states`, `GET /forecast/{state}?year=&date=`, `POST /forecast/narrate`.
-2. New frontend view alongside v1 land-use UI: state/year/date pickers, line chart of point + cone across dates, analog-year list, drivers panel, narrative panel.
-3. Reuses v1's monotonic `gen` token pattern, markdown renderer, status pills.
-
-**My recommendation:** ship Phase E first. It validates the Phase B/C pipeline end-to-end with a real demoable artifact, and Phase D.1's headwinds (storage, Prithvi quirks) are real. Phase E gives us an MVP product to demo even if D.1 drags. Phase F (agent narration) naturally follows E.
+1. **Earthdata auth smoke test.** `python -c "import earthaccess; auth = earthaccess.login(strategy='netrc'); print(auth.authenticated)"`. User confirmed `~/.netrc` is set up. Verify it works in the new env.
+2. **Read `scripts/hls_pull.py` and `scripts/hls_features.py` as reference.** Pull forward the GDAL config, Fmask helpers, band-map asymmetry handling, fsspec-opener pattern, year-by-year checkpointing.
+3. **Write `scripts/download_hls.py`** — pull-once-per-(state, year), granule-level cloud filter 70%, chip extraction inline, granule deletion after chips written.
+4. **Write `scripts/extract_chips.py`** (or fold into `download_hls.py`) — for each (granule, county) intersection: window-read 6 bands clipped to county polygon, slide 224×224 footprint, pick corn-richest position, write chip if ≥ 5% corn pixels, append row to chip index.
+5. **Write `forecast/hls_common.py`** — shared band map (L30 vs S30), Fmask bit decoder, calendar-phase labeler, scaling factor (0.0001 SR scale).
+6. **Write the chip index schema spec** as a doc artifact before code, so the schema is reviewable separately.
+7. **Run end-to-end on one (state, year) cell** as a smoke test before the long pull (e.g. IA 2018, expected ~80–120 granules → process in 30–60 min).
+8. **Long pull** across all 5 states × 12 years over multiple sessions.
 
 ## Budget note
 
-v1 used ~$0.25 of the $10 API cap. v2 token usage will be similar in shape (Haiku narration, ~$0.02 per forecast). Compute cost for HLS download + Prithvi inference is local (Ubuntu box) and outside the API budget.
+v1 used ~$0.25 of the $10 API cap. v2 token usage will be similar in shape (Haiku narration, ~$0.02 per forecast). Compute cost for HLS download + Prithvi inference is local and outside the API budget.

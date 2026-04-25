@@ -45,11 +45,13 @@ async function probeHealth() {
     backend:  document.getElementById("dot-backend"),
     device:   document.getElementById("dot-device"),
     agent:    document.getElementById("dot-agent"),
+    forecast: document.getElementById("dot-forecast"),
   };
   const lbls = {
     backend:  document.getElementById("lbl-backend"),
     device:   document.getElementById("lbl-device"),
     agent:    document.getElementById("lbl-agent"),
+    forecast: document.getElementById("lbl-forecast"),
   };
   try {
     const res = await fetch(`${BASE_URL}/health`, { cache: "no-store" });
@@ -74,6 +76,18 @@ async function probeHealth() {
       dots.agent.classList.add("warn");
       lbls.agent.textContent = "Agent offline";
     }
+
+    if (dots.forecast && lbls.forecast) {
+      if (h.forecast_available) {
+        dots.forecast.classList.add("ok");
+        lbls.forecast.textContent = h.model_version
+          ? `Forecast ${h.model_version}`
+          : "Forecast ready";
+      } else {
+        dots.forecast.classList.add("warn");
+        lbls.forecast.textContent = "Forecast offline";
+      }
+    }
   } catch (e) {
     dots.backend.classList.add("err");
     lbls.backend.textContent = "Backend unreachable";
@@ -81,6 +95,10 @@ async function probeHealth() {
     lbls.device.textContent = "—";
     dots.agent.classList.add("err");
     lbls.agent.textContent = "—";
+    if (dots.forecast && lbls.forecast) {
+      dots.forecast.classList.add("err");
+      lbls.forecast.textContent = "—";
+    }
   }
 }
 

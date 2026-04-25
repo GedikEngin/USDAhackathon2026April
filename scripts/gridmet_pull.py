@@ -68,7 +68,7 @@ COUNTIES_PATH = "data/v2/tiger/tl_2018_us_county.zip"
 
 RAW_DIR = "data/v2/weather/raw"
 NCDF_CACHE_DIR = os.path.join(RAW_DIR, "_gridmet_nc_cache")
-COMBINED_PATH = "scripts/gridmet_county_daily_2005_2024.parquet"
+COMBINED_PATH = "scripts/gridmet_county_daily_2005_2025.parquet"
 
 
 # --- Helpers ---------------------------------------------------
@@ -296,11 +296,10 @@ for year in args.years:
 # --- Optional combine ----------------------------------------
 if args.combine:
     print("\nCombining yearly shards...")
-    shards = []
-    for year in YEARS_DEFAULT:
-        p = os.path.join(RAW_DIR, f"gridmet_county_daily_{year}.parquet")
-        if os.path.exists(p):
-            shards.append(pd.read_parquet(p))
+    import glob as _glob
+    shard_paths = sorted(_glob.glob(os.path.join(RAW_DIR, "gridmet_county_daily_*.parquet")))
+    print(f"  found {len(shard_paths)} shards: {[os.path.basename(x) for x in shard_paths]}")
+    shards = [pd.read_parquet(x) for x in shard_paths]
     if not shards:
         print("no shards found; nothing to combine")
         sys.exit(0)
