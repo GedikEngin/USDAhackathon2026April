@@ -2,7 +2,7 @@
 
 > Living tracker. Update whenever data status changes — pulled, parsed, cleaned, joined, validated, or discovered missing. This is the single source of truth for "do we have what we need to start the next phase."
 
-**Last updated:** 2026-04-25, end of Phase 2-B — **PHASE B COMPLETE; gate passed post-recalibration on 2024 holdout.**
+**Last updated:** 2026-04-25, end of Phase C — **PHASES A, B, C COMPLETE.** No new data acquired in Phase B or C; both phases consumed `training_master.parquet`. Open items below updated to reflect what Phase B and C resolved or deferred.
 
 ## Status legend
 
@@ -136,20 +136,21 @@ The MOD13Q1 source is available 2000–present, but corn-masking depends on USDA
 ## Open data questions
 
 - **HLS slice cleanup deferred to Phase D.1** — current 5 slice CSVs have inconsistent schemas; will be redone with proper county-level pulls when Prithvi work starts.
-- **MODIS NDVI as-of fidelity is weak.** Same value at all 4 forecast dates within a year. Phase B used `ndvi_gs_mean` and `ndvi_peak` in the retrieval embedding without observable overfitting; revisit if Phase C SHAP shows NDVI features dominating at early forecast dates.
-- **NASS-aux fields (`acres_*`, `irrigated_share`, `harvest_ratio`) are post-hoc reported.** Phase B used only `irrigated_share` in the retrieval embedding (the others kept as covariates outside the embedding). Switch to lagged variants if Phase C ablations expose dependence.
-- **Within-state spatial heterogeneity is lost for HLS and USDM** (both broadcast from state level). Acceptable for v2 baseline. Phase B used USDM's `d0_pct` and `d2plus`; remaining D-tiers excluded as collinear-monotone.
-- **MO 2023 drought signal.** Phase B post-recalibration overcorrected MO 2024 because MO 2023 was a real-world drought outlier. Phase C XGBoost should learn this from existing weather + USDM features. If it doesn't, the data layer is genuinely missing what drove MO 2023 — possibly NDVI/HLS at sub-state granularity or an off-table factor (planting delay, nitrogen). Investigate in Phase C if MO RMSE remains high.
-- **Drought feature enrichment.** Phase B shipped with minimal drought features (D0+ and D2+) and passed gate. Candidates if Phase C wants richer signal: DSCI, season-cum drought weeks, silking-peak DSCI, trailing-4-week mean of d2plus.
+- **MODIS NDVI as-of fidelity is weak.** Same value at all 4 forecast dates within a year. **RESOLVED for Phase C (2026-04-25):** SHAP analysis on the first trained Phase C bundle confirmed the regressor was treating MODIS NDVI as a hard answer rather than a soft prior — `ndvi_peak` dominated SHAP at every forecast date including 08-01. All 5 MODIS NDVI columns dropped from `forecast/regressor.py::_NDVI` (now `[]`); see `PHASE2_DECISIONS_LOG.md` Phase 2-C.1 entry. **Phase B retrieval embedding still uses MODIS NDVI** (2 columns: `ndvi_peak`, `ndvi_gs_mean`) — retrieval matching is less sensitive to as-of leakage than point prediction, and Phase B's cone is calibrated to 80% coverage with NDVI in the embedding. Replacement for the regressor will be Phase D.1's HLS-derived running NDVI clipped to forecast_date.
+- **NASS-aux fields (`acres_*`, `irrigated_share`, `harvest_ratio`) are post-hoc reported.** Same value across all 4 forecast dates. Treat as structural priors. **Phase C SHAP analysis (2026-04-25):** `acres_planted_all` is the #2 driver by mean |SHAP| (8.6 bu/acre, after `year` at 13.4); `harvest_ratio` is #3 (4.3); `irrigated_share` is #6 (0.5 mean signed). The dominance is at every forecast_date including 08-01, which is suspicious per the original flag — but in practice these values are reasonably stable year-over-year for a given county and the model is using them as county-typing priors rather than in-season measurements. Acceptable for Phase C; revisit with prior-year-lagged variants if Phase D.1 ablations show the dependence is harmful.
+- **Within-state spatial heterogeneity is lost for HLS and USDM** (both broadcast from state level). Acceptable for v2 baseline.
+- **County coverage filter:** **RESOLVED:** `n_min_history=10` qualifying training years per GEOID for analog candidacy (in `forecast/data.py::train_pool`). Used by Phase B retrieval and Phase C training. 345 of 388 GEOIDs kept; 43 dropped. Counties below threshold can still be QUERIED (forecast for them) but never appear AS analogs. Revisit only if Phase D.1 finds a counterexample.
+- **Drought feature enrichment.** **RESOLVED (default ship was sufficient through Phase C):** Phase C SHAP shows `d2_pct` in top-10 mean signed SHAP (−0.85 — drought reduces predicted yield, as expected); `d0_pct` similar (−0.87). Minimal D0–D4 set proved adequate. Candidates if Phase D.1+ wants richer signal stay on the shelf: DSCI, season-cum drought weeks, silking-peak DSCI, trailing-4-week mean of d2plus.
 
 ## Decisions resolved since last inventory update
 
 - ✅ **`merge_all.py` ships with min-year filter, HLS feature allowlist, NDVI schema-drift guard, per-layer row-count asserts.** Phase A.6.
 - ✅ **`PHASE2_DATA_DICTIONARY.md` written as a comprehensive reference doc** (quick-facts table, source-grouped sections with units/ranges/formulas/phase windows, NaN-patterns triage table, as-of fidelity reference, worked example). Phase A.7.
 - ✅ **NAIP excluded from all v2 phases.** See decisions log 2026-04-25.
-- ✅ **Phase B retrieval-embedding column set locked** — 17 cols at 09-01/10-01/EOS, 15 at 08-01 (drop *_grain at 08-01). Per-(forecast_date) standardization. See decisions log Phase 2-B.
-- ✅ **County coverage filter set at N=10 qualifying training years.** 345 of 388 GEOIDs survive as analog-pool candidates. Counties with <10 years can still be queried; just can't be neighbors. Phase 2-B.
-- ✅ **Same_geoid retrieval pool primary, cross_county retained as flag.** Phase 2-B; revisit cross_county in D.1 with Prithvi embeddings.
+- ✅ **Phase B analog-cone baseline shipped** with `same_geoid` pool, K=5, percentiles (10, 50, 90), per-county trend with state-median fallback, per-(state, forecast_date) recalibration fit on val 2023. Gate passed post-recal on 2024 holdout.
+- ✅ **Phase C XGBoost regressor shipped.** Bundle in `models/forecast/regressor_*.json`. Gate passed on val 2023 EOS at +46.7% lift (threshold 15%). `forecast/regressor.py` + `forecast/explain.py` modules; `scripts/train_regressor.py` + `scripts/backtest_phase_c.py` drivers.
+- ✅ **MODIS NDVI dropped from regressor feature set after Phase 2-C.1 SHAP-driven leakage discovery.** Phase B retrieval embedding unaffected. Replacement is Phase D.1.
+- ✅ **Recalibration is dropped for Phase C.** Val-2023-fitted constants would help val and hurt 2024 holdout (sign flips between years on CO/MO/WI).
 
 ## Phase A definition-of-done — MET
 
@@ -158,18 +159,6 @@ The MOD13Q1 source is available 2000–present, but corn-masking depends on USDA
 - [x] `merge_all.py` asserts pass (key uniqueness, GEOID padding, valid forecast_date, per-layer row-count invariants).
 - [x] Every NaN cell in the master table has a documented cause (structural / sparse-coverage / disclosure suppression).
 - [x] `PHASE2_DATA_DICTIONARY.md` written and exhaustive.
-
-## Phase B definition-of-done — MET
-
-- [x] Retrieval-embedding column set chosen and standardized per-(forecast_date).
-- [x] Per-county trend (CountyTrend) replaces per-state trend after WI bias diagnostic.
-- [x] AnalogIndex with same_geoid + cross_county pool flags shipped (`forecast/analog.py`).
-- [x] Cone construction in detrended space, retrended at query (geoid, year).
-- [x] State aggregation via planted-acres-weighted mean of percentile values.
-- [x] Naive 5-yr county-mean baseline implemented.
-- [x] Per-(state, forecast_date) recalibration fit on val (2023), applied to holdout (2024).
-- [x] Backtest harness with K-sweep, pool-sweep, recalibration, gate evaluation.
-- [x] **Phase B gate PASSED post-recalibration on 2024 holdout.**
 
 ## Budget note
 
