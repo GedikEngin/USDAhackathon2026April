@@ -73,6 +73,7 @@ from forecast.features import (
     VALID_FORECAST_DATES,
     fit_standardizer,
 )
+from forecast.recalibrate import Recalibrator, fit_from_val_results
 
 
 # -----------------------------------------------------------------------------
@@ -486,6 +487,167 @@ def summarize_by_state(results: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def apply_recalibration(
+    results: pd.DataFrame,
+    val_year: int,
+    holdout_year: int,
+) -> Tuple[pd.DataFrame, Dict[Tuple[str, int], Recalibrator]]:
+    """Fit a per-(pool, k) Recalibrator on `val_year` rows and apply to
+    `holdout_year` rows.
+
+    Returns a copy of `results` with two added columns on holdout rows:
+        point_error_recal   : recalibrated point estimate minus truth
+        in_cone_80_recal    : truth in [p10 - c, p90 - c]
+        point_estimate_recal, p10_recal, p90_recal, cone_width_80_recal
+    Val-year rows get the same columns NaN-filled. Other years pass through
+    unchanged with NaN-filled extras.
+
+    Also returns a dict of fitted Recalibrators keyed by (pool, k) for logging.
+    """
+    out = results.copy()
+    out["point_estimate_recal"] = np.nan
+    out["p10_recal"] = np.nan
+    out["p90_recal"] = np.nan
+    out["cone_width_80_recal"] = np.nan
+    out["point_error_recal"] = np.nan
+    out["in_cone_80_recal"] = pd.NA
+
+    recals: Dict[Tuple[str, int], Recalibrator] = {}
+
+    for (pool, k), grp in results.groupby(["pool", "k"]):
+        val_rows = grp[grp["holdout_year"] == val_year]
+        if val_rows.empty:
+            continue
+        recal = fit_from_val_results(val_rows)
+        recals[(str(pool), int(k))] = recal
+
+        holdout_mask = (
+            (out["pool"] == pool)
+            & (out["k"] == k)
+            & (out["holdout_year"] == holdout_year)
+        )
+        idxs = out.index[holdout_mask]
+        for i in idxs:
+            row = out.loc[i]
+            c = recal.get_constant(str(row["state_alpha"]), str(row["forecast_date"]))
+            pt_recal = row["point_estimate"] - c
+            p10_recal = row["p10"] - c
+            p90_recal = row["p90"] - c
+            truth = row["truth_state_yield"]
+
+            out.at[i, "point_estimate_recal"] = pt_recal
+            out.at[i, "p10_recal"] = p10_recal
+            out.at[i, "p90_recal"] = p90_recal
+            out.at[i, "cone_width_80_recal"] = p90_recal - p10_recal
+            if not np.isnan(truth) and not np.isnan(pt_recal):
+                out.at[i, "point_error_recal"] = pt_recal - truth
+                out.at[i, "in_cone_80_recal"] = bool(p10_recal <= truth <= p90_recal)
+
+    return out, recals
+
+
+def summarize_recal(
+    results_with_recal: pd.DataFrame, holdout_year: int
+) -> pd.DataFrame:
+    """Summary table for the recalibrated holdout-year results only.
+
+    Same shape as summarize() but uses the *_recal columns and filters to the
+    holdout_year. The baseline column stays as the un-recalibrated baseline
+    error (the naive 5-yr mean is what it is regardless of recalibration).
+    """
+    out_rows = []
+    sub_holdout = results_with_recal[results_with_recal["holdout_year"] == holdout_year]
+    grp_cols = ["pool", "k", "forecast_date"]
+    for keys, sub in sub_holdout.groupby(grp_cols, sort=False):
+        valid = sub.dropna(subset=["point_error_recal", "baseline_error"])
+        if len(valid) == 0:
+            continue
+        rmse_pt = float(np.sqrt(np.mean(valid["point_error_recal"] ** 2)))
+        rmse_bl = float(np.sqrt(np.mean(valid["baseline_error"] ** 2)))
+        coverage = float(valid["in_cone_80_recal"].astype(bool).mean())
+        mean_width = float(valid["cone_width_80_recal"].mean())
+        out_rows.append(
+            {
+                "pool": keys[0],
+                "k": keys[1],
+                "forecast_date": keys[2],
+                "n": len(valid),
+                "rmse_point_recal": rmse_pt,
+                "rmse_baseline": rmse_bl,
+                "rmse_lift_vs_baseline": rmse_bl - rmse_pt,
+                "coverage_80_recal": coverage,
+                "mean_cone_width_recal": mean_width,
+            }
+        )
+    return (
+        pd.DataFrame(out_rows)
+        .sort_values(["pool", "k", "forecast_date"])
+        .reset_index(drop=True)
+    )
+
+
+def summarize_recal_by_state(
+    results_with_recal: pd.DataFrame, holdout_year: int
+) -> pd.DataFrame:
+    """Per-state breakdown of recalibrated holdout-year results."""
+    out_rows = []
+    sub_holdout = results_with_recal[results_with_recal["holdout_year"] == holdout_year]
+    grp_cols = ["pool", "k", "state_alpha"]
+    for keys, sub in sub_holdout.groupby(grp_cols, sort=False):
+        valid = sub.dropna(subset=["point_error_recal", "baseline_error"])
+        if len(valid) == 0:
+            continue
+        out_rows.append(
+            {
+                "pool": keys[0],
+                "k": keys[1],
+                "state": keys[2],
+                "n": len(valid),
+                "rmse_point_recal": float(np.sqrt(np.mean(valid["point_error_recal"] ** 2))),
+                "rmse_baseline": float(np.sqrt(np.mean(valid["baseline_error"] ** 2))),
+                "coverage_80_recal": float(valid["in_cone_80_recal"].astype(bool).mean()),
+                "mean_cone_width_recal": float(valid["cone_width_80_recal"].mean()),
+            }
+        )
+    return (
+        pd.DataFrame(out_rows)
+        .sort_values(["pool", "k", "state"])
+        .reset_index(drop=True)
+    )
+
+
+def evaluate_recal_gates(
+    recal_summary: pd.DataFrame, primary_pool: str = "same_geoid"
+) -> Dict:
+    """Apply Phase B go/no-go gates to the recalibrated holdout-only summary.
+
+    Gates:
+        1. recal coverage in [70%, 90%] for every (k, forecast_date) of primary_pool
+        2. ∃ K such that recal point RMSE < 5-yr-county-mean baseline RMSE
+           at every forecast_date, for primary_pool
+    """
+    pri = recal_summary[recal_summary["pool"] == primary_pool]
+    if pri.empty:
+        return {
+            "primary_pool": primary_pool,
+            "coverage_in_band": False,
+            "beats_baseline": False,
+        }
+
+    coverage_in_band = bool(pri["coverage_80_recal"].between(0.70, 0.90).all())
+    beats_per_date = {}
+    for date, sub in pri.groupby("forecast_date"):
+        beats_per_date[date] = bool((sub["rmse_point_recal"] < sub["rmse_baseline"]).any())
+    beats_baseline = all(beats_per_date.values())
+
+    return {
+        "primary_pool": primary_pool,
+        "coverage_in_band": coverage_in_band,
+        "beats_baseline": beats_baseline,
+        "per_date_beats": beats_per_date,
+    }
+
+
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
@@ -543,6 +705,13 @@ def main() -> int:
         default=None,
         help="output CSV path (default: runs/backtest_baseline_<timestamp>.csv)",
     )
+    parser.add_argument(
+        "--no-recalibrate",
+        action="store_true",
+        help="skip the per-(state, date) bias recalibration fit on val year. "
+             "Default: recalibrate using the smallest year in --holdout-years as "
+             "val, the largest as holdout.",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress per-row logging")
     args = parser.parse_args()
 
@@ -595,15 +764,64 @@ def main() -> int:
         print(by_state.to_string(index=False))
 
     gates = evaluate_gates(summary, primary_pool=args.primary_pool)
-    print(f"\n=== Phase B gates (primary pool = {gates['primary_pool']}) ===")
+    print(f"\n=== Phase B gates — pre-recalibration (primary pool = {gates['primary_pool']}) ===")
     print(f"  coverage 80% in [70%, 90%]: {gates['coverage_in_band']}")
     print(f"  beats 5-yr-mean baseline:   {gates['beats_baseline']}")
     if "per_date_beats" in gates:
         for d, ok in gates["per_date_beats"].items():
             print(f"      {d}: {ok}")
 
-    overall = gates["coverage_in_band"] and gates["beats_baseline"]
-    print(f"\n  PHASE B GATE: {'PASS' if overall else 'FAIL'}")
+    pre_overall = gates["coverage_in_band"] and gates["beats_baseline"]
+    print(f"  PHASE B (pre-recal): {'PASS' if pre_overall else 'FAIL'}")
+
+    if args.no_recalibrate or len(holdout_years) < 2:
+        # No recalibration possible without at least one year for val and one for holdout.
+        return 0 if pre_overall else 1
+
+    # ---- Recalibration ------------------------------------------------------
+    val_year = min(holdout_years)
+    holdout_year = max(holdout_years)
+    print(f"\n=== Recalibration: fitting on val={val_year}, applying to holdout={holdout_year} ===")
+
+    results_recal, recals = apply_recalibration(results, val_year, holdout_year)
+
+    # Log the fitted constants per (pool, k, state, date) for the primary pool only
+    primary_recal_keys = [(p, k) for (p, k) in recals if p == args.primary_pool]
+    for pk in primary_recal_keys:
+        recal = recals[pk]
+        print(f"  {pk[0]} K={pk[1]} constants (subtract from prediction):")
+        for state in sorted({s for s, _ in recal.constants}):
+            row = "    " + state + ":"
+            for d in forecast_dates:
+                row += f"  {d}={recal.get_constant(state, d):+.1f}"
+            print(row)
+
+    # Persist recalibrated results
+    recal_path = out_path.replace(".csv", "_recal.csv")
+    results_recal.to_csv(recal_path, index=False)
+    print(f"\n[write] {recal_path}")
+
+    # Recalibrated summary + per-state
+    recal_summary = summarize_recal(results_recal, holdout_year)
+    print(f"\n=== summary post-recal ({holdout_year} only, per pool × k × forecast_date) ===")
+    with pd.option_context("display.max_rows", None, "display.width", 140):
+        print(recal_summary.to_string(index=False))
+
+    recal_by_state = summarize_recal_by_state(results_recal, holdout_year)
+    print(f"\n=== per-state post-recal ({holdout_year} only) ===")
+    with pd.option_context("display.max_rows", None, "display.width", 140):
+        print(recal_by_state.to_string(index=False))
+
+    recal_gates = evaluate_recal_gates(recal_summary, primary_pool=args.primary_pool)
+    print(f"\n=== Phase B gates — POST-recal on {holdout_year} (primary pool = {recal_gates['primary_pool']}) ===")
+    print(f"  coverage 80% in [70%, 90%]: {recal_gates['coverage_in_band']}")
+    print(f"  beats 5-yr-mean baseline:   {recal_gates['beats_baseline']}")
+    if "per_date_beats" in recal_gates:
+        for d, ok in recal_gates["per_date_beats"].items():
+            print(f"      {d}: {ok}")
+
+    overall = recal_gates["coverage_in_band"] and recal_gates["beats_baseline"]
+    print(f"\n  PHASE B GATE (post-recal, holdout {holdout_year}): {'PASS' if overall else 'FAIL'}")
     return 0 if overall else 1
 
 
