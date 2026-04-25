@@ -1,5 +1,5 @@
-tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 4 --dirsfirst
-
+f(base) enggd@MSI:~/dev/USDAhackathon2026April$ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|samples' -L 5 
+--dirsfirst
 .
 ├── agent
 │   ├── __init__.py
@@ -11,6 +11,32 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   ├── inference.py
 │   ├── main.py
 │   └── models.py
+├── data
+│   └── v2
+│       ├── tiger
+│       └── weather
+│           └── raw
+│               ├── _gridmet_nc_cache
+│               ├── gridmet_county_daily_2005.parquet
+│               ├── gridmet_county_daily_2006.parquet
+│               ├── gridmet_county_daily_2007.parquet
+│               ├── gridmet_county_daily_2008.parquet
+│               ├── gridmet_county_daily_2009.parquet
+│               ├── gridmet_county_daily_2010.parquet
+│               ├── gridmet_county_daily_2011.parquet
+│               ├── gridmet_county_daily_2012.parquet
+│               ├── gridmet_county_daily_2013.parquet
+│               ├── gridmet_county_daily_2014.parquet
+│               ├── gridmet_county_daily_2015.parquet
+│               ├── gridmet_county_daily_2016.parquet
+│               ├── gridmet_county_daily_2017.parquet
+│               ├── gridmet_county_daily_2018.parquet
+│               ├── gridmet_county_daily_2019.parquet
+│               ├── gridmet_county_daily_2020.parquet
+│               ├── gridmet_county_daily_2021.parquet
+│               ├── gridmet_county_daily_2022.parquet
+│               ├── gridmet_county_daily_2023.parquet
+│               └── gridmet_county_daily_2024.parquet
 ├── docs
 │   ├── CURRENT_STATE.md
 │   ├── DECISIONS_LOG.md
@@ -37,36 +63,50 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 ├── phase2
 │   ├── data
 │   │   ├── drought
-│   │   │   ├── USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv:Zone.Identifier
 │   │   │   └── drought_USDM-Colorado,Iowa,Missouri,Nebraska,Wisconsin.csv
 │   │   ├── gSSURGO
 │   │   │   ├── gSSURGO_CO
+│   │   │   │   └── gSSURGO_CO.gdb
 │   │   │   ├── gSSURGO_IA
+│   │   │   │   └── gSSURGO_IA.gdb
 │   │   │   ├── gSSURGO_MO
+│   │   │   │   └── gSSURGO_MO.gdb
 │   │   │   ├── gSSURGO_NE
+│   │   │   │   └── gSSURGO_NE.gdb
 │   │   │   └── gSSURGO_WI
-│   │   └── ndvi
-│   │       ├── corn_ndvi_5states_2004.csv
-│   │       ├── corn_ndvi_5states_2005.csv
-│   │       ├── corn_ndvi_5states_2006.csv
-│   │       ├── corn_ndvi_5states_2007.csv
-│   │       ├── corn_ndvi_5states_2008.csv
-│   │       ├── corn_ndvi_5states_2009.csv
-│   │       ├── corn_ndvi_5states_2010.csv
-│   │       ├── corn_ndvi_5states_2011.csv
-│   │       ├── corn_ndvi_5states_2012.csv
-│   │       ├── corn_ndvi_5states_2013.csv
-│   │       ├── corn_ndvi_5states_2014.csv
-│   │       ├── corn_ndvi_5states_2015.csv
-│   │       ├── corn_ndvi_5states_2016.csv
-│   │       ├── corn_ndvi_5states_2017.csv
-│   │       ├── corn_ndvi_5states_2018.csv
-│   │       ├── corn_ndvi_5states_2019.csv
-│   │       ├── corn_ndvi_5states_2020.csv
-│   │       ├── corn_ndvi_5states_2021.csv
-│   │       ├── corn_ndvi_5states_2022.csv
-│   │       ├── corn_ndvi_5states_2023.csv
-│   │       └── corn_ndvi_5states_2024.csv
+│   │   │       └── gSSURGO_WI.gdb
+│   │   ├── ndvi
+│   │   │   ├── corn_ndvi_5states_2004.csv
+│   │   │   ├── corn_ndvi_5states_2005.csv
+│   │   │   ├── corn_ndvi_5states_2006.csv
+│   │   │   ├── corn_ndvi_5states_2007.csv
+│   │   │   ├── corn_ndvi_5states_2008.csv
+│   │   │   ├── corn_ndvi_5states_2009.csv
+│   │   │   ├── corn_ndvi_5states_2010.csv
+│   │   │   ├── corn_ndvi_5states_2011.csv
+│   │   │   ├── corn_ndvi_5states_2012.csv
+│   │   │   ├── corn_ndvi_5states_2013.csv
+│   │   │   ├── corn_ndvi_5states_2014.csv
+│   │   │   ├── corn_ndvi_5states_2015.csv
+│   │   │   ├── corn_ndvi_5states_2016.csv
+│   │   │   ├── corn_ndvi_5states_2017.csv
+│   │   │   ├── corn_ndvi_5states_2018.csv
+│   │   │   ├── corn_ndvi_5states_2019.csv
+│   │   │   ├── corn_ndvi_5states_2020.csv
+│   │   │   ├── corn_ndvi_5states_2021.csv
+│   │   │   ├── corn_ndvi_5states_2022.csv
+│   │   │   ├── corn_ndvi_5states_2023.csv
+│   │   │   └── corn_ndvi_5states_2024.csv
+│   │   └── tiger
+│   │       ├── tl_2018_us_county
+│   │       │   ├── tl_2018_us_county.cpg
+│   │       │   ├── tl_2018_us_county.dbf
+│   │       │   ├── tl_2018_us_county.prj
+│   │       │   ├── tl_2018_us_county.shp
+│   │       │   ├── tl_2018_us_county.shp.ea.iso.xml
+│   │       │   ├── tl_2018_us_county.shp.iso.xml
+│   │       │   └── tl_2018_us_county.shx
+│   │       └── tl_2018_us_county_5states_5070.gpkg
 │   ├── growing_conditions.txt
 │   ├── information_available..txt
 │   └── information_needed.txt
@@ -76,6 +116,10 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   ├── dataset_stats.py
 │   ├── download_loveda.sh
 │   ├── emissions.py
+│   ├── gridmet_county_daily_2005_2024.parquet
+│   ├── gridmet_pull.py
+│   ├── gssurgo_county_features.csv
+│   ├── gssurgo_county_features.py
 │   ├── infer.py
 │   ├── nass_corn_5states_2005_2024.csv
 │   ├── nass_corn_5states_features.csv
@@ -86,14 +130,10 @@ tree -I '__pycache__|*.pyc|.git|node_modules|*.zip|Train|Val|inference_outputs|s
 │   ├── smoke_agent_endpoint.sh
 │   ├── smoke_tools.py
 │   ├── test_loader.py
-│   └── train.py
+│   ├── train.py
+│   └── weather_features.py
 ├── fileStructure.txt
-├── gSSURGO_CO.zip:Zone.Identifier
-├── gSSURGO_IA.zip:Zone.Identifier
-├── gSSURGO_MO.zip:Zone.Identifier
-├── gSSURGO_NE.zip:Zone.Identifier
-├── gSSURGO_WI.zip:Zone.Identifier
 ├── requirements-windows.txt
 └── requirements.txt
 
-18 directories, 76 files
+31 directories, 103 files
