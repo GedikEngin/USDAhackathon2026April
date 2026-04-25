@@ -66,7 +66,7 @@ from forecast.data import (
     val_pool,
     holdout_pool,
 )
-from forecast.detrend import StateTrend, fit as fit_trend
+from forecast.detrend import CountyTrend, fit as fit_trend
 from forecast.features import (
     EMBEDDING_COLS,
     Standardizer,
@@ -137,7 +137,7 @@ def _query_row_is_forecastable(query_row: pd.Series, forecast_date: str) -> bool
 
 def forecast_county(
     index: AnalogIndex,
-    trend: StateTrend,
+    trend: CountyTrend,
     query_row: pd.Series,
     k: int,
     pool: str,
@@ -163,6 +163,7 @@ def forecast_county(
     return build_cone(
         analogs,
         trend=trend,
+        query_geoid=str(query_row["GEOID"]),
         query_state=str(query_row["state_alpha"]),
         query_year=int(query_row["year"]),
         query_forecast_date=forecast_date,
@@ -179,7 +180,7 @@ def backtest_state_year_date(
     master_df: pd.DataFrame,
     query_df: pd.DataFrame,        # full holdout-year slice (one of val/holdout pools)
     index: AnalogIndex,
-    trend: StateTrend,
+    trend: CountyTrend,
     state: str,
     year: int,
     forecast_date: str,
@@ -303,13 +304,25 @@ def run_backtest(
     trend = fit_trend(train_df)
     if verbose:
         print(
-            f"[setup] state trend fit on years "
-            f"{trend.fit_years[0]}-{trend.fit_years[1]}:"
+            f"[setup] per-county trend fit on years "
+            f"{trend.fit_years[0]}-{trend.fit_years[1]}: "
+            f"{len(trend.county_slopes)} counties fit"
         )
-        for s in sorted(trend.slopes.keys()):
+        # Per-state summary: median per-county slope, count of counties, fallback.
+        # Useful for spotting states where the per-county trends are wild
+        # (large IQR = noisy individual fits).
+        slopes_by_state: Dict[str, list] = {}
+        for geoid, slope in trend.county_slopes.items():
+            state = trend.geoid_to_state[geoid]
+            slopes_by_state.setdefault(state, []).append(slope)
+        for s in sorted(slopes_by_state.keys()):
+            arr = np.array(slopes_by_state[s])
             print(
-                f"           {s}: slope={trend.slopes[s]:+.2f} bu/acre/yr  "
-                f"(n={trend.fit_n[s]:,})"
+                f"           {s}: n_counties={len(arr):>3}  "
+                f"median_slope={np.median(arr):+.2f}  "
+                f"p10={np.percentile(arr, 10):+.2f}  "
+                f"p90={np.percentile(arr, 90):+.2f}  "
+                f"(fallback slope={trend.state_fallback_slopes[s]:+.2f})"
             )
 
     index = AnalogIndex.fit(train_df, standardizer, trend)

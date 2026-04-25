@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
 
-from forecast.detrend import StateTrend
+from forecast.detrend import CountyTrend
 from forecast.features import (
     EMBEDDING_COLS,
     Standardizer,
@@ -111,14 +111,14 @@ class AnalogIndex:
     def __init__(self) -> None:
         self._indices: Dict[str, _DateIndex] = {}
         self._standardizer: Optional[Standardizer] = None
-        self._trend: Optional[StateTrend] = None
+        self._trend: Optional[CountyTrend] = None
 
     @classmethod
     def fit(
         cls,
         train_df: pd.DataFrame,
         standardizer: Standardizer,
-        trend: StateTrend,
+        trend: CountyTrend,
     ) -> "AnalogIndex":
         """Build per-date BallTree indices over the train pool.
 
@@ -137,7 +137,8 @@ class AnalogIndex:
             n_null = int(train_df["detrended_yield_target"].isna().sum())
             raise ValueError(
                 f"Train pool has {n_null} null detrended yields after detrending. "
-                f"Likely a state in the data is missing from the StateTrend fit."
+                f"Likely a county in the data is missing from the CountyTrend fit "
+                f"(no per-county fit AND no state fallback)."
             )
 
         # Build the standardized matrices per date (this also validates no nulls

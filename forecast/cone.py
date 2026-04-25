@@ -27,7 +27,7 @@ from typing import Dict, Iterable, List, Tuple
 import numpy as np
 
 from forecast.analog import Analog
-from forecast.detrend import StateTrend
+from forecast.detrend import CountyTrend
 
 
 @dataclass
@@ -70,7 +70,8 @@ class Cone:
 
 def build_cone(
     analogs: List[Analog],
-    trend: StateTrend,
+    trend: CountyTrend,
+    query_geoid: str,
     query_state: str,
     query_year: int,
     query_forecast_date: str,
@@ -83,14 +84,19 @@ def build_cone(
     analogs : list[Analog]
         Output of AnalogIndex.find(...). Empty list raises ValueError —
         caller must handle counties with no analogs upstream.
-    trend : StateTrend
+    trend : CountyTrend
         Used to retrend the detrended percentiles back to raw bu/acre at
-        (query_state, query_year).
-    query_state, query_year, query_forecast_date :
+        (query_geoid, query_year).
+    query_geoid : str
+        5-digit FIPS of the query county. Used for retrending — the cone
+        is anchored to this county's own trend line, not a state aggregate.
+    query_state : str
+        State of the query, recorded on the returned Cone for the
+        aggregation layer. Not used in math.
+    query_year, query_forecast_date :
         Query identifiers, attached to the returned Cone for traceability.
     percentiles : iterable of int
-        Percentiles to compute. Default (10, 50, 90). Must include 50 if
-        you want a point_estimate that matches the median.
+        Percentiles to compute. Default (10, 50, 90).
 
     Returns
     -------
@@ -99,40 +105,35 @@ def build_cone(
     if not analogs:
         raise ValueError(
             f"build_cone called with no analogs for query "
-            f"({query_state}, {query_year}, {query_forecast_date}). "
+            f"({query_geoid}, {query_year}, {query_forecast_date}). "
             f"Caller must filter or short-circuit upstream."
         )
 
     pcts: Tuple[int, ...] = tuple(int(p) for p in percentiles)
     if any(p < 0 or p > 100 for p in pcts):
         raise ValueError(f"percentiles must be in [0, 100], got {pcts}")
-    if 50 not in pcts:
-        # Not strictly required for the structure, but the point_estimate
-        # contract leans on it. Caller can pass (10, 50, 90) and forget about it.
-        # Be quiet rather than raising — just compute the median separately below.
-        pass
 
     detrended_vals = np.array([a.detrended_yield for a in analogs], dtype=np.float64)
     if np.isnan(detrended_vals).any():
         raise ValueError(
-            "Analog list contains NaN detrended_yield. This indicates a state "
-            "missing from the StateTrend fit, or an upstream merge bug."
+            "Analog list contains NaN detrended_yield. This indicates a county "
+            "missing from the CountyTrend fit, or an upstream merge bug."
         )
 
     # Percentiles in detrended space.
     detrended_pcts = np.percentile(detrended_vals, pcts)
     detrended_dict = {int(p): float(v) for p, v in zip(pcts, detrended_pcts)}
 
-    # Retrend each percentile back to raw bu/acre at the query (state, year).
+    # Retrend each percentile back to raw bu/acre at the query (geoid, year).
     retrended_dict = {
-        p: float(trend.retrend(query_state, query_year, v))
+        p: float(trend.retrend(query_geoid, query_year, v))
         for p, v in detrended_dict.items()
     }
 
     # Median analog yield as the Phase B point estimate. Take the median in
     # detrended space and retrend; equivalent to retrend(median(detrended)).
     median_detrended = float(np.median(detrended_vals))
-    point_estimate = float(trend.retrend(query_state, query_year, median_detrended))
+    point_estimate = float(trend.retrend(query_geoid, query_year, median_detrended))
 
     return Cone(
         percentiles=retrended_dict,

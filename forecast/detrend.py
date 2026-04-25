@@ -1,36 +1,41 @@
 """
-forecast.detrend — per-state linear yield trend, fit on the training pool.
+forecast.detrend — per-county linear yield trend, fit on the training pool.
 
-Why this exists
----------------
-Corn yields trend upward over time (genetics, agronomy, management). Across the
-2005-2024 modeling window, the U.S. corn-belt trend is roughly +1.5 bu/acre/year.
-If we don't detrend, an analog from 2008 systematically under-predicts a 2023
-query — the K-NN finds weather-similar years, but the yield distribution it
-returns is anchored to whatever decade those analogs come from.
-
-Convention
-----------
-Per-state OLS on `yield_target ~ year` over the training pool (2005-2022,
-post min-history filter). We fit per-state, not per-county, because:
-  - per-state has 18 years × ~80 counties = ~1,400 obs per state, very stable
-  - per-county trends are noisy with only 18 points; year-to-year weather noise
-    overwhelms the genetic-gain signal
-  - state-level matches the brief's reporting unit (we ultimately publish state
-    forecasts) and the level at which agronomic improvements are reported
-
-Sign convention: a "detrended yield" is the residual after subtracting the
-per-state linear prediction at that year. So a 2008 IA county that yielded
-175 bu/acre against a 165 bu/acre state-trend fit gets detrended_yield = +10.
-A 2023 query gets retrend(median(detrended_analogs)) added back at the
-state-trend prediction for 2023.
-
-Public surface
+Why per-county
 --------------
-    fit(train_df)                  -> StateTrend
-    StateTrend.detrend(df)         -> df with detrended_yield_target column
-    StateTrend.retrend(state, year, value)  -> value + per-state trend at year
-    StateTrend.save(path) / load(path)
+Phase B diagnostic (2026-04-25) revealed that a per-state trend fit by OLS
+under-fits in WI: 14 of 18 train years had positive residuals, meaning the
+linear line systematically sat below the actual yield curve. When K-NN
+analog retrieval picks weather-similar years, those analogs inherit the
+same bias (their detrended residuals skew positive), and retrending forward
+through the same too-flat trend bakes the bias into every prediction. WI
+ended up systematically over-predicted by ~16 bu/acre.
+
+A per-county trend doesn't share the cross-county confounding that drives
+this bias. Each county gets its own slope and intercept fit on its own
+18-year history (post min-history filter we have ≥10 years per county).
+When a county's analog pool returns same-GEOID matches, the detrended
+residuals are measured against that county's own trend line, and the
+median residual centers near zero by construction.
+
+Trade-offs
+----------
+- 18 OLS points per county is noisier than 1,400 points per state. Some
+  county slopes will be implausibly large/small. We don't clamp slopes —
+  the cone width absorbs the noise via the analog distribution.
+- Counties below the min-history threshold can still be queried (we
+  forecast for them) but their per-county trend isn't reliable. As a
+  defensive fallback we use the state median of per-county fits within
+  that state — this represents "typical county trend" rather than a slope
+  dragged by the largest counties.
+
+API (signatures changed: keying on GEOID instead of state_alpha)
+----------------------------------------------------------------
+    fit(train_df)                       -> CountyTrend
+    CountyTrend.predict(geoid, year)    scalar/array, fallback to state if unknown
+    CountyTrend.detrend(df)             adds detrended_yield_target column
+    CountyTrend.retrend(geoid, year, v) inverse
+    CountyTrend.save / .load
 """
 
 from __future__ import annotations
@@ -45,101 +50,156 @@ import pandas as pd
 
 
 @dataclass
-class StateTrend:
-    """Per-state linear trend `yield_target = slope * year + intercept`.
+class CountyTrend:
+    """Per-county linear trend `yield_target = slope * year + intercept`,
+    with per-state median fallback for counties without a per-county fit.
 
     Attributes
     ----------
-    slopes      : dict[state_alpha, float]    bu/acre per year
-    intercepts  : dict[state_alpha, float]    bu/acre at year=0
-    fit_years   : tuple[int, int]             (min, max) train-pool years used
-    fit_n       : dict[state_alpha, int]      training row count per state
+    county_slopes / county_intercepts : per-GEOID slope and intercept
+    state_fallback_slopes / state_fallback_intercepts :
+        per-state median of the per-county fits, used when a queried GEOID
+        has no per-county fit.
+    geoid_to_state : lookup so retrend can find the right fallback if the
+        per-county fit is missing.
+    fit_years : (min, max) training-window years used for the fit.
+    fit_n : per-GEOID training row count.
     """
 
-    slopes: Dict[str, float] = field(default_factory=dict)
-    intercepts: Dict[str, float] = field(default_factory=dict)
+    county_slopes: Dict[str, float] = field(default_factory=dict)
+    county_intercepts: Dict[str, float] = field(default_factory=dict)
+    state_fallback_slopes: Dict[str, float] = field(default_factory=dict)
+    state_fallback_intercepts: Dict[str, float] = field(default_factory=dict)
+    geoid_to_state: Dict[str, str] = field(default_factory=dict)
     fit_years: tuple = (0, 0)
     fit_n: Dict[str, int] = field(default_factory=dict)
 
-    def predict(self, state_alpha: str, year: int | np.ndarray) -> float | np.ndarray:
-        """Trend prediction for `state_alpha` at `year`.
+    # ---- prediction ---------------------------------------------------------
 
-        Accepts scalar or array `year`; returns matching shape.
-        """
-        if state_alpha not in self.slopes:
+    def _slope_intercept_for(self, geoid: str) -> tuple[float, float]:
+        """Return (slope, intercept) for a GEOID, falling back to state median
+        if the GEOID has no per-county fit."""
+        if geoid in self.county_slopes:
+            return self.county_slopes[geoid], self.county_intercepts[geoid]
+        state = self.geoid_to_state.get(geoid)
+        if state is None or state not in self.state_fallback_slopes:
             raise KeyError(
-                f"No trend fit for state {state_alpha!r}. "
-                f"Fit states: {sorted(self.slopes.keys())}"
+                f"GEOID {geoid!r} has no per-county trend and no state fallback. "
+                f"Fit GEOIDs: {len(self.county_slopes)}, "
+                f"fit states: {sorted(self.state_fallback_slopes.keys())}"
             )
-        return self.slopes[state_alpha] * np.asarray(year) + self.intercepts[state_alpha]
+        return (
+            self.state_fallback_slopes[state],
+            self.state_fallback_intercepts[state],
+        )
+
+    def predict(self, geoid: str, year: int | np.ndarray) -> float | np.ndarray:
+        """Trend prediction for `geoid` at `year`. Accepts scalar or array year."""
+        slope, intercept = self._slope_intercept_for(geoid)
+        return slope * np.asarray(year) + intercept
 
     def detrend(self, df: pd.DataFrame, *, target_col: str = "yield_target") -> pd.DataFrame:
-        """Return a copy of `df` with a `detrended_<target_col>` column added.
+        """Add `detrended_<target_col>` column = target − per-county trend at each row's year.
 
-        Rows with state_alpha not in the fit are passed through with NaN
-        detrended value (and a one-time warning is the caller's responsibility).
-        Rows with NaN target keep NaN detrended target (e.g. unharvested holdout).
+        Rows whose GEOID has no per-county fit AND no state fallback get NaN
+        detrended target — caller is responsible for filtering or handling.
         """
-        if "state_alpha" not in df.columns or "year" not in df.columns:
-            raise KeyError("df must have state_alpha and year columns")
+        if "GEOID" not in df.columns or "year" not in df.columns:
+            raise KeyError("df must have GEOID and year columns")
         if target_col not in df.columns:
             raise KeyError(f"df missing target column {target_col!r}")
 
         out = df.copy()
-        # Vectorize trend prediction by mapping per-state slope/intercept.
-        # Rows whose state isn't in the fit get NaN trend (preserves yield_target NaN behavior).
-        slope_arr = out["state_alpha"].map(self.slopes).to_numpy(dtype=np.float64)
-        intercept_arr = out["state_alpha"].map(self.intercepts).to_numpy(dtype=np.float64)
-        year_arr = out["year"].to_numpy(dtype=np.float64)
-        trend = slope_arr * year_arr + intercept_arr  # NaN where state unmapped
+        geoids = out["GEOID"].to_numpy()
+        slopes = np.empty(len(out), dtype=np.float64)
+        intercepts = np.empty(len(out), dtype=np.float64)
+        for i, g in enumerate(geoids):
+            try:
+                s, b = self._slope_intercept_for(str(g))
+            except KeyError:
+                s, b = np.nan, np.nan
+            slopes[i] = s
+            intercepts[i] = b
 
-        out[f"detrended_{target_col}"] = out[target_col].to_numpy(dtype=np.float64) - trend
+        years = out["year"].to_numpy(dtype=np.float64)
+        trend = slopes * years + intercepts
+        out[f"detrended_{target_col}"] = (
+            out[target_col].to_numpy(dtype=np.float64) - trend
+        )
         return out
 
     def retrend(
-        self,
-        state_alpha: str,
-        year: int,
-        detrended_value: float | np.ndarray,
+        self, geoid: str, year: int, detrended_value: float | np.ndarray
     ) -> float | np.ndarray:
-        """Inverse of detrend at the (state, year) level. Add back the trend."""
-        return np.asarray(detrended_value) + self.predict(state_alpha, year)
+        """Inverse of detrend at the (geoid, year) level. Add back the trend."""
+        return np.asarray(detrended_value) + self.predict(geoid, year)
+
+    # ---- serialization ------------------------------------------------------
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "slopes": self.slopes,
-            "intercepts": self.intercepts,
+            "county_slopes": self.county_slopes,
+            "county_intercepts": self.county_intercepts,
+            "state_fallback_slopes": self.state_fallback_slopes,
+            "state_fallback_intercepts": self.state_fallback_intercepts,
+            "geoid_to_state": self.geoid_to_state,
             "fit_years": list(self.fit_years),
             "fit_n": self.fit_n,
         }
         path.write_text(json.dumps(payload, indent=2))
 
     @classmethod
-    def load(cls, path: str | Path) -> "StateTrend":
+    def load(cls, path: str | Path) -> "CountyTrend":
         payload = json.loads(Path(path).read_text())
         return cls(
-            slopes=payload["slopes"],
-            intercepts=payload["intercepts"],
+            county_slopes=payload["county_slopes"],
+            county_intercepts=payload["county_intercepts"],
+            state_fallback_slopes=payload["state_fallback_slopes"],
+            state_fallback_intercepts=payload["state_fallback_intercepts"],
+            geoid_to_state=payload["geoid_to_state"],
             fit_years=tuple(payload["fit_years"]),
             fit_n=payload.get("fit_n", {}),
         )
 
 
-def fit(train_df: pd.DataFrame, *, target_col: str = "yield_target") -> StateTrend:
-    """Fit per-state linear trend on the training pool.
+# Backwards-compat alias — old code/scripts still importing StateTrend
+# don't have to change. The class itself is the same; only the API keying
+# moved from state_alpha to GEOID.
+StateTrend = CountyTrend
 
-    The caller passes the training subset of the master table. We collapse to
-    one row per (GEOID, year) before fitting (the master table has 4 forecast_dates
-    per year; yield_target is identical across them). This prevents the regression
-    from being implicitly weighted 4x.
 
-    Raises
-    ------
-    ValueError if any state has fewer than 5 distinct years of non-null target,
-    which is far below what we expect (18 train years × ~80 counties per state)
-    and indicates an upstream problem.
+# -----------------------------------------------------------------------------
+# Fitting
+# -----------------------------------------------------------------------------
+
+
+def fit(
+    train_df: pd.DataFrame,
+    *,
+    target_col: str = "yield_target",
+    min_county_years: int = 5,
+) -> CountyTrend:
+    """Fit per-county OLS on the training pool, with state-median fallback.
+
+    Parameters
+    ----------
+    train_df : DataFrame
+        Training-pool slice. Must have GEOID, year, state_alpha, target_col.
+        Caller is responsible for prior filtering (min-history, complete
+        embedding, non-null target).
+    target_col : str
+        Column to fit. Default 'yield_target'.
+    min_county_years : int
+        Minimum distinct years required for a per-county fit. Below this,
+        the county is left out of the per-county map and will hit the state
+        fallback at predict time. Default 5 (generous; the upstream
+        min-history filter is 10).
+
+    Returns
+    -------
+    CountyTrend
     """
     required = ["GEOID", "year", "state_alpha", target_col]
     missing = [c for c in required if c not in train_df.columns]
@@ -157,31 +217,54 @@ def fit(train_df: pd.DataFrame, *, target_col: str = "yield_target") -> StateTre
     fit_min = int(one_per_geoid_year["year"].min())
     fit_max = int(one_per_geoid_year["year"].max())
 
-    slopes: Dict[str, float] = {}
-    intercepts: Dict[str, float] = {}
+    county_slopes: Dict[str, float] = {}
+    county_intercepts: Dict[str, float] = {}
     fit_n: Dict[str, int] = {}
+    geoid_to_state: Dict[str, str] = {}
 
-    for state in sorted(one_per_geoid_year["state_alpha"].unique()):
-        sub = one_per_geoid_year[one_per_geoid_year["state_alpha"] == state]
-        n_distinct_years = sub["year"].nunique()
-        if n_distinct_years < 5:
-            raise ValueError(
-                f"State {state!r} has only {n_distinct_years} distinct training "
-                f"year(s); refusing to fit a trend on that. Check the train pool."
-            )
-        # Plain OLS via numpy. polyfit deg=1 returns [slope, intercept].
+    for (geoid, state), sub in one_per_geoid_year.groupby(["GEOID", "state_alpha"]):
+        geoid_to_state[str(geoid)] = str(state)
+        n_distinct = sub["year"].nunique()
+        if n_distinct < min_county_years:
+            continue
         slope, intercept = np.polyfit(
             sub["year"].to_numpy(dtype=np.float64),
             sub[target_col].to_numpy(dtype=np.float64),
             deg=1,
         )
-        slopes[state] = float(slope)
-        intercepts[state] = float(intercept)
-        fit_n[state] = int(len(sub))
+        county_slopes[str(geoid)] = float(slope)
+        county_intercepts[str(geoid)] = float(intercept)
+        fit_n[str(geoid)] = int(len(sub))
 
-    return StateTrend(
-        slopes=slopes,
-        intercepts=intercepts,
+    if len(county_slopes) == 0:
+        raise ValueError(
+            f"No counties had ≥{min_county_years} training years; cannot fit any "
+            f"per-county trend. Check the train pool."
+        )
+
+    # State fallback = median of per-county slopes/intercepts within the state.
+    # Median not mean: robust to one or two implausible per-county fits, and
+    # represents a "typical county trend in this state" more naturally.
+    state_fallback_slopes: Dict[str, float] = {}
+    state_fallback_intercepts: Dict[str, float] = {}
+    by_state = pd.DataFrame(
+        {
+            "geoid": list(county_slopes.keys()),
+            "slope": list(county_slopes.values()),
+            "intercept": list(county_intercepts.values()),
+        }
+    )
+    by_state["state_alpha"] = by_state["geoid"].map(geoid_to_state)
+    for state, grp in by_state.groupby("state_alpha"):
+        state_fallback_slopes[str(state)] = float(grp["slope"].median())
+        state_fallback_intercepts[str(state)] = float(grp["intercept"].median())
+
+    return CountyTrend(
+        county_slopes=county_slopes,
+        county_intercepts=county_intercepts,
+        state_fallback_slopes=state_fallback_slopes,
+        state_fallback_intercepts=state_fallback_intercepts,
+        geoid_to_state=geoid_to_state,
         fit_years=(fit_min, fit_max),
         fit_n=fit_n,
     )
