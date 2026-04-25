@@ -638,6 +638,24 @@
   // ===================================================================
   // view router: hash-based, called from app.js or on its own
   // ===================================================================
+  // Alternate Model tab points at the Aurum (Next.js) site. URL precedence:
+  //   1. ?alt=<url> query param (persisted to localStorage)
+  //   2. localStorage "alt_url"
+  //   3. http://localhost:3000  (default Next.js dev port)
+  function resolveAltUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("alt");
+    if (fromQuery) {
+      try { localStorage.setItem("alt_url", fromQuery); } catch (e) { /* ignore */ }
+      return fromQuery;
+    }
+    try {
+      const fromLs = localStorage.getItem("alt_url");
+      if (fromLs) return fromLs;
+    } catch (e) { /* ignore */ }
+    return "http://localhost:3000";
+  }
+
   function applyHashRoute() {
     const hash = (window.location.hash || "").replace(/^#/, "").trim();
     const wantForecast = hash === "forecast";
@@ -656,8 +674,10 @@
   function bindTabs() {
     const tabLu = $("tab-landuse");
     const tabFc = $("tab-forecast");
-    if (tabLu) tabLu.onclick = () => { window.location.hash = "landuse"; applyHashRoute(); };
+    const tabAl = $("tab-alternate");
+    if (tabLu) tabLu.onclick = () => { window.location.hash = "landuse";  applyHashRoute(); };
     if (tabFc) tabFc.onclick = () => { window.location.hash = "forecast"; applyHashRoute(); };
+    if (tabAl) tabAl.onclick = () => { window.location.assign(resolveAltUrl()); };
     window.addEventListener("hashchange", applyHashRoute);
   }
 

@@ -1,4 +1,4 @@
-// app.js — Terra frontend
+// app.js — Aurum frontend
 // Vanilla JS, no build step. Talks to the FastAPI backend at BASE_URL.
 
 // When the frontend is served by FastAPI at /ui/ (the recommended setup),

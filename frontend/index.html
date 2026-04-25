@@ -3,7 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Terra / Land-Use & GHG Analysis</title>
+<title>Aurum / Land-Use & GHG Analysis</title>
+<script>
+  // Apply theme before paint to avoid a flash. Defaults to light.
+  try {
+    var t = localStorage.getItem("theme") || "light";
+    document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -35,6 +42,33 @@
 
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     --serif: "Fraunces", "Iowan Old Style", Georgia, serif;
+
+    /* Body atmosphere — overridden in light mode below. */
+    --vignette:      #162018;
+    --scanline:      rgba(255,255,255,0.008);
+    --shadow-chip:   0 1px 2px rgba(0,0,0,0.25);
+    --accent-hover:  #e68138;
+  }
+
+  /* ---------------- LIGHT MODE — matches Ian's Aurum scheme ---------------- */
+  :root[data-theme="light"] {
+    --bg:            #f9fafb;   /* gray-50  */
+    --bg-raised:     #ffffff;   /* white    */
+    --bg-sunken:     #f3f4f6;   /* gray-100 */
+    --ink:           #111827;   /* gray-900 */
+    --ink-dim:       #4b5563;   /* gray-600 */
+    --ink-faint:     #9ca3af;   /* gray-400 */
+    --accent:        #15803d;   /* green-700 */
+    --accent-dim:    #166534;   /* green-800 */
+    --accent-hover:  #166534;
+    --ok:            #16a34a;   /* green-600 */
+    --warn:          #ca8a04;   /* yellow-600 */
+    --err:           #dc2626;   /* red-600 */
+    --rule:          #e5e7eb;   /* gray-200 */
+
+    --vignette:      #ecfdf5;   /* green-50 — soft tint at top */
+    --scanline:      rgba(0,0,0,0.012);
+    --shadow-chip:   0 1px 2px rgba(0,0,0,0.06);
   }
 
   * { box-sizing: border-box; }
@@ -48,12 +82,13 @@
     min-height: 100vh;
     /* subtle vignette so the bg isn't a flat slab */
     background-image:
-      radial-gradient(ellipse at top, #162018 0%, var(--bg) 60%),
+      radial-gradient(ellipse at top, var(--vignette) 0%, var(--bg) 60%),
       repeating-linear-gradient(
         0deg,
         transparent 0px, transparent 3px,
-        rgba(255,255,255,0.008) 3px, rgba(255,255,255,0.008) 4px
+        var(--scanline) 3px, var(--scanline) 4px
       );
+    transition: background-color 200ms, color 200ms;
   }
 
   /* ---------- top status bar (the "instrument chrome") ---------- */
@@ -109,17 +144,121 @@
   .status .dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
   .status .dot.err  { background: var(--err);  box-shadow: 0 0 8px var(--err); }
 
+  /* ---------- theme toggle (top-right of nav) ---------- */
+  .theme-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    padding: 3px;
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: border-color 150ms, background 150ms;
+  }
+  .theme-switch:hover { border-color: var(--accent); }
+  .theme-switch button {
+    background: transparent;
+    border: 0;
+    width: 26px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-faint);
+    cursor: pointer;
+    border-radius: 999px;
+    transition: background 150ms, color 150ms;
+    padding: 0;
+  }
+  .theme-switch button svg { width: 14px; height: 14px; display: block; }
+  :root[data-theme="dark"]  .theme-switch button[data-mode="dark"]  { background: var(--accent); color: var(--bg-sunken); }
+  :root[data-theme="light"] .theme-switch button[data-mode="light"] { background: var(--accent); color: #fff; }
+
+  /* ---------- sponsor bar (mirrors Aurum's SponsorBar) ---------- */
+  .sponsor-bar {
+    position: relative;
+    margin: 18px 28px 0;
+    background: #0a100c;
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    overflow: hidden;
+    padding: 18px 0 16px;
+  }
+  .sponsor-bar .sb-label {
+    text-align: center;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ink-faint);
+    margin-bottom: 12px;
+  }
+  .sponsor-bar .sb-track-wrap {
+    position: relative;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to right, transparent 0, black 80px, black calc(100% - 80px), transparent 100%);
+            mask-image: linear-gradient(to right, transparent 0, black 80px, black calc(100% - 80px), transparent 100%);
+  }
+  .sponsor-bar .sb-track {
+    display: flex;
+    gap: 24px;
+    width: max-content;
+    animation: sb-scroll 30s linear infinite;
+  }
+  .sponsor-bar:hover .sb-track { animation-play-state: paused; }
+  @keyframes sb-scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+  .sponsor-bar .sb-chip {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #fff;
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow: var(--shadow-chip);
+    white-space: nowrap;
+    min-width: 180px;
+    flex-shrink: 0;
+  }
+  .sponsor-bar .sb-chip img {
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+    flex-shrink: 0;
+  }
+  .sponsor-bar .sb-chip .sb-name {
+    color: #111;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  .sponsor-bar .sb-chip .sb-desc {
+    color: #888;
+    font-size: 9.5px;
+    line-height: 1;
+    margin-top: 4px;
+    letter-spacing: 0.02em;
+  }
+  @media (max-width: 900px) {
+    .sponsor-bar { margin: 14px 16px 0; }
+  }
+
   /* ---------- main grid ---------- */
+  /* main is just a container; the active .view inside it owns the column
+     layout. We give main full width up to a generous cap so the 3-column
+     views can breathe. */
   main {
-    display: grid;
-    grid-template-columns: minmax(380px, 460px) minmax(560px, 1fr);
-    gap: 40px;
-    padding: 32px 28px;
-    max-width: 1600px;
+    padding: 28px 28px;
+    max-width: 1800px;
     margin: 0 auto;
   }
   @media (max-width: 900px) {
-    main { grid-template-columns: 1fr; padding: 20px 16px; gap: 28px; }
+    main { padding: 20px 16px; }
   }
 
   /* ---------- panel base style ---------- */
@@ -320,7 +459,7 @@
     cursor: pointer;
     transition: background 150ms, transform 80ms;
   }
-  button.analyze:hover:not(:disabled) { background: #e68138; }
+  button.analyze:hover:not(:disabled) { background: var(--accent-hover); }
   button.analyze:active:not(:disabled) { transform: translateY(1px); }
   button.analyze:disabled {
     background: var(--rule);
@@ -548,15 +687,27 @@
     background: rgba(212, 116, 42, 0.06);
   }
 
-  /* Reuse the existing main grid; view containers occupy the same shape. */
+  /* 3-column layout: controls | visuals | output. Each view (Land Use and
+     Yield Forecast) splits content into three sibling <section>s so the
+     page reads horizontally instead of scrolling vertically. Columns wrap
+     down at narrower viewports via auto-fit. */
   .view {
     display: grid;
-    grid-template-columns: minmax(380px, 460px) minmax(560px, 1fr);
-    gap: 40px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
     width: 100%;
+    align-items: start;
   }
-  @media (max-width: 900px) {
-    .view { grid-template-columns: 1fr; gap: 28px; }
+  .view > .col { min-width: 0; }
+  .view > .col > .panel + .panel { margin-top: 16px; }
+  @media (max-width: 1200px) {
+    .view { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* The third column drops below and spans full width. */
+    .view > .col-right { grid-column: 1 / -1; }
+  }
+  @media (max-width: 760px) {
+    .view { grid-template-columns: 1fr; gap: 20px; }
+    .view > .col-right { grid-column: auto; }
   }
 
   /* Pickers — three rows of buttons. Reuse .demo aesthetics. */
@@ -750,26 +901,63 @@
 
 <header class="chrome">
   <div class="brand">
-    <span class="logo">Terra</span>
+    <span class="logo">Aurum</span>
     <span class="tag">Land-Use &amp; GHG Analysis &middot; Yield Forecast</span>
   </div>
   <div class="view-tabs">
     <button class="tab active" id="tab-landuse">Land Use</button>
     <button class="tab" id="tab-forecast">Yield Forecast</button>
+    <button class="tab" id="tab-alternate">Alternate Model</button>
   </div>
   <div class="status">
     <div class="pill"><span class="dot" id="dot-backend"></span><span id="lbl-backend">Backend</span></div>
     <div class="pill"><span class="dot" id="dot-device"></span><span id="lbl-device">Device</span></div>
     <div class="pill"><span class="dot" id="dot-agent"></span><span id="lbl-agent">Agent</span></div>
     <div class="pill"><span class="dot" id="dot-forecast"></span><span id="lbl-forecast">Forecast</span></div>
+    <div class="theme-switch" id="theme-switch" role="group" aria-label="Theme">
+      <button type="button" data-mode="light" aria-label="Light mode" title="Light mode">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
+      <button type="button" data-mode="dark"  aria-label="Dark mode"  title="Dark mode">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
   </div>
 </header>
+
+<div class="sponsor-bar" aria-label="Data sources and partners">
+  <div class="sb-label">Powered by</div>
+  <div class="sb-track-wrap">
+    <div class="sb-track" id="sb-track">
+      <!-- chips are injected twice by the small script below for a seamless loop -->
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    const SOURCES = [
+      { src: "logos/nasa.png",         name: "NASA",         desc: "HLS Satellite · Prithvi" },
+      { src: "logos/usda.png",         name: "USDA",         desc: "NASS Yield · NRCS gSSURGO" },
+      { src: "logos/aws.png",          name: "AWS",          desc: "SageMaker Training" },
+      { src: "logos/google-earth.png", name: "Google Earth", desc: "Earth Engine · NDVI Export" },
+      { src: "logos/esri.png",         name: "Esri",         desc: "GIS Infrastructure" },
+      { src: "logos/databricks.png",   name: "Databricks",   desc: "Data Platform" },
+    ];
+    const track = document.getElementById("sb-track");
+    if (!track) return;
+    const chip = (s) =>
+      `<div class="sb-chip"><img src="${s.src}" alt="${s.name}" />` +
+      `<div><div class="sb-name">${s.name}</div><div class="sb-desc">${s.desc}</div></div></div>`;
+    // Duplicate the list so the -50% translate loops without a seam.
+    track.innerHTML = SOURCES.concat(SOURCES).map(chip).join("");
+  })();
+</script>
 
 <main>
 <div id="view-landuse" class="view">
 
-  <!-- LEFT column: input + measurement -->
-  <section class="left">
+  <!-- LEFT column: input + composition (controls + measurements) -->
+  <section class="col col-left">
 
     <div class="panel" id="panel-input">
       <div class="panel-title"><span>Input</span><span class="idx">01</span></div>
@@ -786,27 +974,7 @@
       </div>
     </div>
 
-    <div class="panel" id="panel-preview" style="margin-top: 16px;">
-      <div class="panel-title"><span>Imagery / Segmentation</span><span class="idx">02</span></div>
-      <div class="panel-body">
-        <div class="imgs">
-          <figure>
-            <figcaption>Source</figcaption>
-            <div class="frame" id="frame-source">
-              <span class="empty">Awaiting input</span>
-            </div>
-          </figure>
-          <figure>
-            <figcaption>Predicted classes</figcaption>
-            <div class="frame" id="frame-mask">
-              <span class="empty">—</span>
-            </div>
-          </figure>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel" id="panel-composition" style="margin-top: 16px; display: none;">
+    <div class="panel" id="panel-composition" style="display: none;">
       <div class="panel-title"><span>Composition</span><span class="idx">03</span></div>
       <div class="panel-body">
         <div class="comp-bar" id="comp-bar"></div>
@@ -838,8 +1006,31 @@
 
   </section>
 
+  <!-- MIDDLE column: imagery / segmentation -->
+  <section class="col col-mid">
+    <div class="panel" id="panel-preview">
+      <div class="panel-title"><span>Imagery / Segmentation</span><span class="idx">02</span></div>
+      <div class="panel-body">
+        <div class="imgs">
+          <figure>
+            <figcaption>Source</figcaption>
+            <div class="frame" id="frame-source">
+              <span class="empty">Awaiting input</span>
+            </div>
+          </figure>
+          <figure>
+            <figcaption>Predicted classes</figcaption>
+            <div class="frame" id="frame-mask">
+              <span class="empty">—</span>
+            </div>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- RIGHT column: agent report -->
-  <section class="right">
+  <section class="col col-right">
     <div class="panel report-panel" id="panel-report">
       <div class="panel-title"><span>Sustainability Report</span><span class="idx">04</span></div>
       <div id="report-empty" class="report-empty">
@@ -856,7 +1047,8 @@
 
 <div id="view-forecast" class="view" style="display: none;">
 
-  <section class="left">
+  <!-- LEFT column: controls + summary + drivers -->
+  <section class="col col-left">
     <div class="panel" id="fc-panel-pickers">
       <div class="panel-title"><span>Forecast</span><span class="idx">01</span></div>
       <div class="panel-body">
@@ -869,15 +1061,24 @@
       </div>
     </div>
 
-    <div class="panel" id="fc-panel-headline" style="margin-top: 16px;">
+    <div class="panel" id="fc-panel-headline">
       <div class="panel-title"><span>State summary</span><span class="idx">02</span></div>
       <div class="panel-body">
         <div id="fc-headline" class="fc-headline"></div>
       </div>
     </div>
+
+    <div class="panel" id="fc-panel-drivers">
+      <div class="panel-title"><span>Top drivers</span><span class="idx">05</span></div>
+      <div class="panel-body">
+        <div class="fc-section-note">Acres-weighted SHAP across counties for the latest forecast date in view. Positive bu/ac = pushes the prediction up.</div>
+        <div id="fc-drivers" class="fc-drivers"></div>
+      </div>
+    </div>
   </section>
 
-  <section class="right">
+  <!-- MIDDLE column: cone chart + per-date detail -->
+  <section class="col col-mid">
     <div class="panel" id="fc-panel-cone">
       <div class="panel-title"><span>Trajectory &amp; cone</span><span class="idx">03</span></div>
       <div class="panel-body">
@@ -890,22 +1091,17 @@
       </div>
     </div>
 
-    <div class="panel" id="fc-panel-kpis" style="margin-top: 16px;">
+    <div class="panel" id="fc-panel-kpis">
       <div class="panel-title"><span>Per-date detail</span><span class="idx">04</span></div>
       <div class="panel-body">
         <div id="fc-kpis" class="fc-kpis"></div>
       </div>
     </div>
+  </section>
 
-    <div class="panel" id="fc-panel-drivers" style="margin-top: 16px;">
-      <div class="panel-title"><span>Top drivers</span><span class="idx">05</span></div>
-      <div class="panel-body">
-        <div class="fc-section-note">Acres-weighted SHAP across counties for the latest forecast date in view. Positive bu/ac = pushes the prediction up.</div>
-        <div id="fc-drivers" class="fc-drivers"></div>
-      </div>
-    </div>
-
-    <div class="panel" id="fc-panel-analogs" style="margin-top: 16px;">
+  <!-- RIGHT column: analog years + narrative -->
+  <section class="col col-right">
+    <div class="panel" id="fc-panel-analogs">
       <div class="panel-title"><span>Analog years</span><span class="idx">06</span></div>
       <div class="panel-body">
         <div class="fc-section-note">5 closest analog seasons for the largest-acres county in this state, in standardized embedding distance.</div>
@@ -913,7 +1109,7 @@
       </div>
     </div>
 
-    <div class="panel report-panel" id="fc-panel-narrative" style="margin-top: 16px;">
+    <div class="panel report-panel" id="fc-panel-narrative">
       <div class="panel-title"><span>Narrative</span><span class="idx">07</span></div>
       <div class="panel-body">
         <div id="fc-narrative" class="fc-narrative"></div>
@@ -925,6 +1121,20 @@
 
 </main>
 
+<script>
+  (function () {
+    const sw = document.getElementById("theme-switch");
+    if (!sw) return;
+    function set(mode) {
+      document.documentElement.setAttribute("data-theme", mode);
+      try { localStorage.setItem("theme", mode); } catch (e) {}
+    }
+    sw.addEventListener("click", function (e) {
+      const btn = e.target.closest("button[data-mode]");
+      if (btn) set(btn.dataset.mode);
+    });
+  })();
+</script>
 <script src="app.js"></script>
 <script src="forecast.js"></script>
 </body>
