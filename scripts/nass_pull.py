@@ -16,7 +16,7 @@ if not API_KEY:
 
 BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
 STATES = ["CO", "IA", "MO", "NE", "WI"]
-YEARS = list(range(2015, 2025))
+YEARS = list(range(2004, 2025))
 
 # Slower default + retry on rate limit
 REQUEST_DELAY_SEC = 2.0      # was 0.5 — bump to 2s between requests
