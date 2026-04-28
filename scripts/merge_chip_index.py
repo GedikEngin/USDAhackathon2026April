@@ -90,12 +90,17 @@ def validate(df: pd.DataFrame) -> list[str]:
     errors: list[str] = []
 
     # 1. (granule_id, GEOID) uniqueness.
-    # The orchestrator emits at most one row per (granule, county) pair, so
-    # duplicates would indicate a resume-bug or concurrent-write race.
+    # The orchestrator emits at most one row per (granule, county) pair.
+    # Sentinel rows (GEOID == "00000", "county_not_in_granule") are exempt:
+    # cross-state-border MGRS tiles (e.g. T15TYE on the IA/MO line) get
+    # included in BOTH states' CMR queries and both shards write an
+    # identical sentinel — that's expected, not a bug.
     dup_mask = df.duplicated(subset=["granule_id", "GEOID"], keep=False)
-    if dup_mask.any():
-        n_dups = int(dup_mask.sum())
-        sample = df.loc[dup_mask, ["granule_id", "GEOID", "_shard_source"]].head(10)
+    sentinel_dup = dup_mask & (df["GEOID"] == SENTINEL_GEOID_NO_INTERSECT)
+    real_dup = dup_mask & ~sentinel_dup
+    if real_dup.any():
+        n_dups = int(real_dup.sum())
+        sample = df.loc[real_dup, ["granule_id", "GEOID", "_shard_source"]].head(10)
         errors.append(
             f"duplicate (granule_id, GEOID) rows: {n_dups}\n"
             f"  sample:\n{sample.to_string(index=False)}"
@@ -257,6 +262,23 @@ def main():
     # Drop the _shard_source bookkeeping column before validation/output;
     # it's only useful for debugging.
     df_clean = df.drop(columns=["_shard_source"])
+
+    # Dedupe sentinel rows (GEOID == "00000") that appear in multiple state
+    # shards because a cross-state-border MGRS tile (e.g. T15TYE on the IA/MO
+    # line) gets returned by both states' CMR queries and both shards write an
+    # identical "county_not_in_granule" sentinel. Real chip rows are NOT
+    # touched — those have unique (granule_id, GEOID).
+    sentinel_mask = df_clean["GEOID"] == SENTINEL_GEOID_NO_INTERSECT
+    n_sentinel_before = int(sentinel_mask.sum())
+    sent_df = (
+        df_clean[sentinel_mask]
+        .drop_duplicates(subset=["granule_id", "GEOID"], keep="first")
+    )
+    df_clean = pd.concat([df_clean[~sentinel_mask], sent_df], ignore_index=True)
+    n_sentinel_after = int((df_clean["GEOID"] == SENTINEL_GEOID_NO_INTERSECT).sum())
+    n_dropped = n_sentinel_before - n_sentinel_after
+    if n_dropped > 0:
+        print(f"  deduped {n_dropped} cross-state sentinel rows")
 
     # Validate
     section("VALIDATION")

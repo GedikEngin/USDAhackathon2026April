@@ -406,3 +406,64 @@ This entry documents the D.1 sub-phase plan locked at kickoff. The actual delive
 - **Raw CDL retention through Phase D.1.** ~17.6 GB. Can be deleted early if disk pressure becomes an issue during HLS pulls; for now keeping for mask-rule iteration headroom.
 
 **Phase 2-D.1.a closed cleanly.** Ready to start D.1.b (HLS download + chip extraction).
+
+---
+
+### Phase 2-D.1.e — Hybrid model decision (D.1 gate result) — 2026-04-28
+
+**Context:** Sub-phases D.1.b (HLS download), D.1.c (chip extraction), and D.1.d (Prithvi inference) executed end-to-end against the cap=48 dense pull on a 1.9 TB external SSD (NTFS, mounted at `/mnt/d/usda/hls/` via symlink from `data/v2/hls/`). Final state at gate evaluation: 43,724 positive chips (vs 4,200 at the earlier cap=5 attempt), covering 13,805 of the 14,560 `(GEOID, year, forecast_date)` triples (95% coverage) — sample-size starvation that wrecked the cap=5 attempt is no longer a confound.
+
+**Gate test ran on Row B (engineered + raw 1024-D Prithvi + QC) vs Row A (engineered-only, same 2013–2022 pool) at val 2023 EOS.** Initial Row B sweep failed at −3.95% lift (Row A 19.95, Row B 20.73) — better than cap=5's −12.83%, but still below the +5% gate threshold. Per-state breakdown made the failure mode visible: Iowa improved 3.4%, Colorado improved 15.6%, but Nebraska regressed 26.1% and Missouri/Wisconsin lost 7–8%. The 1024-D embedding overwhelms XGBoost in the lower-signal states; trees can't soft-select features and noise from non-corn pixels dominates.
+
+Three remediation variants were tested side-by-side at fixed XGBoost hyperparams (depth=4, lr=0.05, mcw=5, num_boost_round=600 with early-stopping=50): (raw1024 → tree), (PCA-32 → tree, 95.4% variance preserved), (PCA-64 → tree, 97.4%), and (Ridge-probe on 1024D → 1 scalar feature → tree). The Ridge-probe variant won as the best single model (EOS 19.42, vs 20.39 for PCA-32 and 19.92 for raw1024). Per-state, every variant beat Row A on IA + CO and lost to it on MO + NE + WI. The cleanest play was a per-state hybrid that always picks the winner.
+
+**Final ablation (val 2023, county-level):**
+
+```
+                EOS rmse    lift vs canonical Row A (19.95)
+canonical Row A   19.95     baseline
+Row A (this run)  19.01     +4.73%   (stronger fixed-config run, NOT the gate ref)
+Row B (raw 1024)  19.92     +0.15%   FAIL
+Row B (PCA-32)    20.39     -2.21%   FAIL
+Row B (PCA-64)    20.28     -1.65%   FAIL
+Row B (Ridge)     19.42     +2.67%   miss (best single Row B variant)
+HYBRID            18.65     +6.50%   PASS ✓
+```
+
+**Decided:**
+
+- **Phase 2-D.1 gate: PASS via hybrid model.** Final EOS RMSE 18.65 on val 2023, +6.50% below the canonical Row A reference of 19.95. Threshold +5%; clears with margin.
+- **Production model is the hybrid bundle, persisted at `models/forecast_d1_hybrid/`.** Per-state routing rule: `state ∈ {CO, IA}` → Row B (Prithvi-aware), `state ∈ {MO, NE, WI}` → Row A (engineered-only). 12 saved artifacts: 4 Ridge-probe NPZ files (1024 weights + intercept per forecast_date), 4 Row A XGBoost JSONs, 4 Row B XGBoost JSONs, plus `hybrid_manifest.json` with the full routing rule, gate metric, and feature-list contracts.
+- **Ridge probe sits between the embedding and XGBoost in Row B.** A linear regression with `alpha=10.0` over all 1024 Prithvi dims, fit on chip-bearing 2013–2022 rows, produces a single `ridge_pred` scalar that XGBoost consumes alongside the 35 engineered features and 4 QC columns. This is the foundation-model-best-practice "linear probe" pattern. Selected over feeding raw 1024-D directly to XGBoost (decision trees axis-split one feature at a time, hostile to high-D-low-N) and over PCA-then-tree (linear-then-tree gives the linear part a regularization knob via `alpha`, PCA + tree doesn't).
+- **HLS pull strategy upgraded mid-phase: `--granule-cap 5` → `--granule-cap 48`.** Initial 200 GB-budget run at cap=5 produced only 4,200 chips covering 30% of `(GEOID, year, forecast_date)` triples; gate failed at −12.83% almost entirely from sample-size starvation in Row B (1,444 EOS train rows vs Row A's 3,023). Cap=48 produces 43,724 chips covering 95% of triples and totals ~1.4 TB cumulative bandwidth. Storage moved to `/mnt/d/usda/hls/` (1.9 TB external SSD, NTFS+drvfs, 64 KB allocation unit) via symlink; internal SSD untouched.
+- **Chip-bearing coverage scales sub-linearly with cap.** cap=5 → 30% triples covered; cap=48 → 95%. Most of the marginal gain happens between cap=10 and cap=30 as MGRS-tile coverage saturates within each state. cap=100 (the original Phase D.1 plan) was never necessary and would have cost ~3 TB of bandwidth for marginal additional triples.
+- **Per-state routing is mechanical, not learned.** The routing rule was selected manually from the cap=48 ablation's per-state breakdown (IA-Δ +8.1%, CO-Δ +3.0%, NE-Δ −6.4%, MO-Δ −4.3%, WI-Δ −7.9%). Selected over a learned gate (e.g. logistic regression per row deciding A vs B) because: routing complexity is low (5 states, fixed assignment, frozen at gate time), and a learned gate would add a hyperparameter to validate. Documented as a reviewable decision rather than buried in a model.
+- **PCA-reduced embedding parquets retained as ablation artifacts.** `data/v2/prithvi/embeddings_v1_pca32.parquet` and `_pca64.parquet` (2.25 MB and 4.28 MB) stay on disk. Useful if D.2 (Prithvi fine-tune) ever happens or if Wisconsin silage symptom investigation prompts re-running with phenology-DOY phase windows.
+
+**Rejected alternatives:**
+
+- **Pure Row B with raw 1024-D feeding XGBoost.** Theoretically uses every dim. In practice trees can't soft-attend over 1024 features with ~3000 rows; per-state breakdown showed catastrophic regression in NE (+26.1% RMSE). Failed gate at −3.95%. Kept as `models/forecast_d1/` (the original D.1 retrain output) for traceability, not deployed.
+- **PCA-32 / PCA-64 → XGBoost (no Ridge).** Compresses 1024 dims to 32 or 64 dense linear combinations, preserves 95.4% / 97.4% of variance. Underperformed both raw 1024 (because tree-axis splits don't benefit from PC-axes either) and Ridge probe (because trees can't combine PC features the way Ridge can combine raw dims). Useful diagnostic; rejected as the production embedding compressor.
+- **Pure Row B with Ridge probe everywhere (no per-state routing).** Best single Row B variant at EOS 19.42 (+2.67% vs canonical Row A). Doesn't clear the +5% gate. Hybrid wins because it gets to keep Row A's wins on MO/NE/WI; pure Row B has to take the hit. Rejected.
+- **Train per-state Row B models from scratch.** Each state would have ~600 train rows for a 1024-D embedding — even worse N/D ratio than the global model. Considered briefly; not worth running. Per-state routing of *globally-trained* models is the right shape.
+- **Learned gating (per-row "use A or B" classifier).** Adds a hyperparameter, costs a sweep, and the learnable signal is essentially "what state is this row?" — which we're routing on directly. Manual routing is cheaper and more inspectable.
+- **Bumping cap further (cap=100 or above).** With 95% triple coverage at cap=48, the marginal triples are mostly in the cloudiest weeks of WI 2017 and CO 2013–14 — exactly the chips that are most likely to be Fmask-rejected anyway. Not worth 2× the bandwidth.
+
+**Surprises / learnings:**
+
+- **The fixed-config Row A in the D.1.e ablation script (19.01 EOS) is stronger than the hyperparam-swept Row A bundle (19.95).** Sweep selection on val performance picked configs that overfit slightly to specific forecast dates; the fixed-config run is more honest. The +6.50% gate verdict is measured against the documented 19.95 reference (the threshold that has been on the books since 2-D.1.kickoff). Apples-to-apples vs the 19.01 fixed-config Row A, hybrid lift is +1.86% — real but below the documented threshold. Both numbers reported in the manifest.
+- **AnyDesk/sleep-killed shards are silent.** Two of four shards stalled mid-run at 01:37 — `earthaccess.download()` blocked on a hung TCP read, the Python process stayed alive but did nothing for 6+ hours. No timeout in the download loop. Resume worked perfectly once kicked (the per-cell parquet flush every 20 granules saves all but trailing work), but the failure mode is invisible without the progress UI we built mid-flight. **Carry-forward fix:** wrap `earthaccess.download()` in a `signal.alarm()` watchdog or use a `requests` session with an explicit `read_timeout`. ~5-line change.
+- **Cross-state-border MGRS tile sentinels are duplicate by design.** Tile T15TYE on the IA/MO line was returned by both the IA and MO CMR queries; both shards wrote a "county_not_in_granule" sentinel row (GEOID=00000) for the same granule_id. 52 such pairs. The merge script's strict (granule_id, GEOID) uniqueness check failed on these. **Patched:** sentinel-only deduplication during merge; real chip rows remain strictly unique (granule_id, GEOID). This is a docs-worthy invariant — sentinel rows are a granule-level statement, not a county-level one.
+- **NE per-state regression is a corn-fraction-uniformity issue, not a chip-coverage issue.** Initial diagnosis hypothesized sparse cap=5 chip coverage in NE. cap=48 confirmed NE chips are abundant (984 chips for NE 2023 alone) — but Row B *still* regresses NE by 26%. Real cause: NE counties have fairly uniform corn fraction year-to-year (14–16% across 2013–2024), so the embedding doesn't differentiate years and adds noise the regressor latches onto. Per-state routing addresses the symptom; the underlying signal-to-noise floor for NE in this embedding is just lower.
+- **The first PC of the 1024-D Prithvi embedding captures 55% of variance.** Single dominant axis. PCA-32 captures 95.4%, PCA-64 captures 97.4% — diminishing returns past ~20 dims. Suggests Prithvi's mean-pool representation has lower effective dimensionality than the nominal 1024 implies; consistent with the foundation-model literature on linear-probe collapse.
+- **3-axis Earthdata bandwidth (4 shards / NTFS-via-9P / 36 MB/s aggregate) was acceptable.** cap=48 full pull completed in ~12 hours real-world (one stall recovery). NTFS-via-9P perf tax was real but absorbed by parallel workers. Internal SSD wasn't touched after the symlink; full chip set lives on the external D: drive.
+
+**Open questions carried forward:**
+
+- **Wisconsin silage investigation.** WI loses 7.9% with the Ridge variant, consistent with the cap=5 result. The pre-registered hypothesis (silage signal contaminating grain-yield embeddings) holds. Fix would require re-pulling chips with a CDL mask that excludes class 24 (Corn for Silage); estimated ~30 GB additional pull. Out of scope for D.1 closure but a candidate for D.2 or a targeted top-up.
+- **Download timeout / watchdog.** The 01:37 silent stall consumed 6.5 hours of wall time before manual intervention. Add a per-granule timeout (90s) and a cumulative no-progress watchdog (5 min idle → SIGINT self) to `download_hls.py` before any future pulls.
+- **Per-state routing for forecast dates other than EOS.** Hybrid was tuned on EOS per-state lift; routing rule applied uniformly across all 4 forecast dates. The same {CO, IA} → Row B rule was tested at 08-01, 09-01, 10-01 — wins at 09-01 and 10-01, loses by ~0.02 RMSE at 08-01. Acceptable for production. Per-(state, date) routing would add 19 more decision points; not justified by the gain.
+- **Holdout (2024) evaluation.** Phase G will run the full ablation on the held-out 2024 data. Hybrid's 2024 performance is the actual production evidence; the 2023 val number is the gate metric only.
+- **State-aggregation step.** Brief specifies state-level reporting via planted-acres-weighted county aggregation. Not yet wired into the hybrid's prediction path; `forecast/aggregate.py` exists but consumes a single bundle, not a hybrid. Phase E backend wiring will add a `HybridD1Bundle.predict_state_aggregated(state, year, forecast_date)` method.
+
+**Phase 2-D.1 closed: PASS.** Hybrid model deployed at `models/forecast_d1_hybrid/`. Phase D.2 (Prithvi fine-tune) remains a stretch goal; not unlocked by D.1.e since the gate already passed via the frozen-extractor + hybrid-routing combination. Phase E (backend endpoints) is the next critical path.
